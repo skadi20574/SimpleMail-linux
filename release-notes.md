@@ -1,4 +1,4 @@
-# SimpleMail 1.1.4
+# SimpleMail 1.1.5
 
 一个**本地优先（local-first）**的开源 Linux 桌面邮件客户端。界面与操作习惯参照 Foxmail，
 但完全独立实现 —— 不使用任何商业软件的商标、图标、素材或代码。
@@ -12,11 +12,39 @@
 
 | 文件 | 大小 | 适用 |
 | --- | --- | --- |
-| `SimpleMail_1.1.4_amd64.deb` | 78 MB | **推荐**。`sudo apt install ./SimpleMail_1.1.4_amd64.deb`，依赖自动处理，沙箱真正开启 |
-| `simplemail-1.1.4.tar.gz` | 108 MB | 免安装。解压后 `./simplemail` 直接跑，不依赖 FUSE、不需要 root |
-| `SimpleMail-1.1.4-x86_64.AppImage` | 87 MB | 单文件。Ubuntu 22.04+ 需先 `sudo apt install libfuse2`（24.04+ 是 `libfuse2t64`） |
+| `SimpleMail_1.1.5_amd64.deb` | 78 MB | **推荐**。`sudo apt install ./SimpleMail_1.1.5_amd64.deb`，依赖自动处理，沙箱真正开启 |
+| `simplemail-1.1.5.tar.gz` | 108 MB | 免安装。解压后 `./simplemail` 直接跑，不依赖 FUSE、不需要 root |
+| `SimpleMail-1.1.5-x86_64.AppImage` | 87 MB | 单文件。Ubuntu 22.04+ 需先 `sudo apt install libfuse2`（24.04+ 是 `libfuse2t64`） |
 
 适用 Ubuntu 22.04 / 24.04 / 26.04（其他 glibc ≥ 2.31 的发行版基本也可以）。
+
+---
+
+## 本版变更（1.1.5）
+
+这是一个**只动许可与打包元数据的版本，没有任何功能改动**，邮件数据完全不受影响。
+
+修掉两个查许可证识别问题时牵出来的缺陷：
+
+- **`LICENSE` 现在能被正确识别为 MIT。** 之前文件末尾追加了一段商标说明，
+  破坏了与标准 MIT 文本的逐字匹配 —— 法律上没问题（MIT 正文是完整的），
+  但 GitHub 会把许可证显示成 `NOASSERTION`（未识别），企业里常见的自动化
+  许可证扫描器（FOSSA / ScanCode / Snyk）会把它报成「未知许可证」。
+  附加说明已移到独立的 [`NOTICE.md`](NOTICE.md)，`LICENSE` 保持逐字 MIT。
+- **安装包开始携带许可声明。** 之前的 `.deb` / AppImage / `.tar.gz` 里**没有任何
+  许可文本**，而 MIT 的条件之一正是「版权声明与许可声明须包含在本软件的所有副本中」
+  —— 安装包就是副本。现在三种形态都会带上 `LICENSE` 与 `NOTICE.md`；
+  `.deb` 另外在 `/usr/share/doc/simplemail/` 下提供 DEP-5（机器可读）格式的
+  `copyright`，`lintian` 不再报 `no-copyright-file`。
+
+顺带修正应用菜单分类：
+
+- 生成的启动项之前是 `Categories=Network;`，配置里写的 `Email` 被
+  electron-builder **静默丢弃**（它会在铺开 `desktop` 键值对之后用
+  `linux.category` 覆盖掉 `desktop.Categories`）。现在改为 `Network;Email;`
+  —— 应用菜单里会正确归到「邮件」，同时只有一个主分类，不会重复出现条目。
+
+如果你把 1.1.4 的安装包再分发出去过，建议换成 1.1.5。
 
 ---
 
@@ -70,11 +98,14 @@ npm test
 重建分字段全文索引）。
 
 ```bash
-sudo apt install --reinstall ./SimpleMail_1.1.4_amd64.deb
+sudo apt install --reinstall ./SimpleMail_1.1.5_amd64.deb
 ```
 
 ---
 
 ## 许可证
 
-MIT。第三方组件与商标说明见仓库根目录的 `LICENSE`。
+MIT（见 [`LICENSE`](LICENSE)）。第三方组件与商标说明见 [`NOTICE.md`](NOTICE.md)。
+
+三种安装形态都会随包分发这两份声明；`.deb` 还提供
+`/usr/share/doc/simplemail/copyright`（DEP-5 机器可读格式）。

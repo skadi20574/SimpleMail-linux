@@ -41,7 +41,22 @@ linux:
     # tar.gz 作为第三形态：完全不依赖 FUSE、不需要安装，
     # 解压后直接运行 ./SimpleMail，在 Ubuntu 24.04+ 上比 AppImage 更省事
     - tar.gz
-  category: Network
+  # ⚠️ 分类只能写在这里。electron-builder 的 LinuxTargetHelper.js 第 157 行会
+  # 在铺开 desktop 键值对**之后**用这个字段无条件覆盖 desktop.Categories：
+  #
+  #     ...targetSpecificOptions.desktop,          // 先铺开我们的键值对
+  #     desktopMeta.Categories = `${category}...`  // 再被这一行覆盖掉
+  #
+  # 所以之前写在 desktop 下的 Categories 是被静默丢弃的，生成的 desktop 文件里
+  # 只有 Network; —— 应用菜单里也就归不到「邮件」。
+  #
+  # 这里是 Network;Email; 而不是 Network;Email;Office;：
+  # desktop 规范里 Network / Office **都是主分类**，同时出现两个主分类时
+  # desktop-file-validate 会提示「might appear more than once in the application
+  # menu」—— 应用菜单里会重复出现两个条目。Email 是 Network 下的附加分类，
+  # 所以 Network;Email; 既能归到「邮件」又只有一个主分类（Thunderbird 用的
+  # 就是 Network;Email;News;）。改这个值前先用 desktop-file-validate 验一遍。
+  category: Network;Email;
   maintainer: SimpleMail <simplemail@localhost>
   # ⚠️ synopsis / description 一律用 **ASCII 英文**。
   #
@@ -65,7 +80,8 @@ linux:
     # 但带 [zh_CN] 后缀的是另一个键，不会被覆盖，中文界面下优先用它。
     Comment[zh_CN]: 本地优先的邮件客户端，支持 Foxmail 存档导入导出
     GenericName[zh_CN]: 邮件客户端
-    Categories: Network;Email;Office;
+    # 这里**不要**写 Categories —— 它会被 linux.category 覆盖（原因见上面那段注释），
+    # 写了也只会让人以为生效了。分类统一在 linux.category 里维护。
     Keywords: email;mail;imap;pop3;smtp;
     Keywords[zh_CN]: 邮件;邮箱;Foxmail;收发;
     StartupWMClass: SimpleMail

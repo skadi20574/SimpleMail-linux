@@ -13,9 +13,21 @@ set -uo pipefail
 
 cd "$(dirname "$0")/.."
 
-DEB="$(ls -1 release/*.deb 2>/dev/null | head -1)"
-if [ -z "$DEB" ]; then
-  echo "找不到 release/*.deb，请先运行 ./scripts/build.sh"
+# 按 package.json 里的版本号挑包，**不要**用 `ls | head -1`。
+#
+# 曾经的写法 `ls -1 release/*.deb | head -1` 在 release/ 里同时存在 1.1.4 和 1.1.5
+# 两个 deb 时，字典序会让它挑中 1.1.4 —— 于是校验通过的是旧包，
+# 新包有没有问题反而看不出来。这种「校验了错的东西」比不校验更危险。
+VERSION="$(node -p 'require("./package.json").version')"
+DEB="release/SimpleMail_${VERSION}_amd64.deb"
+if [ ! -f "$DEB" ]; then
+  # 退一步：找同版本号的任意命名（arch 可能不是 amd64）
+  DEB="$(ls -1 "release/SimpleMail_${VERSION}_"*.deb 2>/dev/null | head -1)"
+fi
+if [ -z "${DEB:-}" ] || [ ! -f "$DEB" ]; then
+  echo "找不到版本为 $VERSION 的 .deb（release/ 里现有：）"
+  ls -1 release/*.deb 2>/dev/null | sed 's/^/  /' || echo "  （没有 deb）"
+  echo "请先运行 ./scripts/build.sh"
   exit 2
 fi
 
@@ -82,6 +94,35 @@ if [ -f "$DESKTOP" ]; then
     ok "Comment 只有一行"
   else
     bad "Comment 出现了 $CMT_LINES 行（desktop 文件不允许续行值）"
+  fi
+
+  # 分类要真的落在「邮件」下，同时只能有一个主分类。
+  #
+  # 曾经踩过两件事：
+  #   1. 分类写在 desktop.Categories 里，但 electron-builder 会在铺开 desktop
+  #      键值对之后用 linux.category 覆盖它 —— 配置里写着 Network;Email;Office;，
+  #      生成的却只有 Network;，而且**没有任何报错**。只检查「Categories= 存在」
+  #      是抓不到这种静默丢失的。
+  #   2. Network 和 Office 都是主分类，同时出现会让应用菜单里重复出现条目，
+  #      desktop-file-validate 会给 hint。
+  CATS="$(grep '^Categories=' "$DESKTOP" | head -1 | cut -d= -f2-)"
+  for want in Network Email; do
+    if echo "$CATS" | tr ';' '\n' | grep -qx "$want"; then
+      ok "分类含 $want"
+    else
+      bad "分类缺少 $want（当前 Categories=$CATS）—— 八成是被 linux.category 覆盖了"
+    fi
+  done
+  MAIN_CATS=0
+  for main in AudioVideo Development Education Game Graphics Network Office Science Settings System Utility; do
+    if echo "$CATS" | tr ';' '\n' | grep -qx "$main"; then
+      MAIN_CATS=$((MAIN_CATS + 1))
+    fi
+  done
+  if [ "$MAIN_CATS" -eq 1 ]; then
+    ok "只有一个主分类（菜单里不会重复出现）"
+  else
+    bad "有 $MAIN_CATS 个主分类（Categories=$CATS）—— 应用菜单里会重复出现条目"
   fi
 else
   bad "没有找到 simplemail.desktop"
