@@ -59,7 +59,7 @@
 
   <launchable type="desktop-id">simplemail.desktop</launchable>
 
-  <url type="homepage">https://localhost/simplemail</url>
+  <url type="homepage">https://github.com/skadi20574/SimpleMail-linux</url>
 
   <developer id="com.simplemail">
     <name>SimpleMail</name>

@@ -7,7 +7,7 @@
     "name": "SimpleMail",
     "email": "simplemail@localhost"
   },
-  "homepage": "https://localhost/simplemail",
+  "homepage": "https://github.com/skadi20574/SimpleMail-linux",
   "license": "MIT",
   "private": true,
   "scripts": {
@@ -25,7 +25,8 @@
     "dist:portable": "npm run build && electron-builder --linux tar.gz",
     "test:launcher": "bash scripts/test-launcher.sh",
     "test": "npm run typecheck && npm run selftest && npm run test:launcher",
-    "test:package": "bash scripts/verify-package.sh"
+    "test:package": "bash scripts/verify-package.sh",
+    "publish": "node scripts/publish-github.mjs"
   },
   "dependencies": {
     "iconv-lite": "^0.6.3",
@@ -47,5 +48,24 @@
     "react-dom": "^18.3.1",
     "typescript": "^5.8.3",
     "vite": "^6.3.5"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/skadi20574/SimpleMail-linux.git"
+  },
+  "bugs": {
+    "url": "https://github.com/skadi20574/SimpleMail-linux/issues"
+  },
+  "keywords": [
+    "email",
+    "mail",
+    "imap",
+    "pop3",
+    "smtp",
+    "electron",
+    "linux",
+    "foxmail",
+    "sqlite",
+    "fts5"
+  ]
 }
