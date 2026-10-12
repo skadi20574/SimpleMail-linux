@@ -1,0 +1,86 @@
+appId: com.simplemail.app
+productName: SimpleMail
+copyright: SimpleMail — MIT licensed. No third-party commercial software assets are used.
+
+directories:
+  output: release
+  buildResources: build
+
+# 只打包编译产物与运行期依赖，避免把开发工具链带进安装包
+files:
+  - out/**
+  - package.json
+  - '!out/dev'
+  - '!**/*.map'
+  - '!**/*.ts'
+
+asar: true
+compression: maximum
+# 给可执行文件套一层 shell 启动器，按 chrome-sandbox 权限自适应决定是否关闭沙箱
+afterPack: build/linux/after-pack.cjs
+# 往 .deb 里塞 AppStream 元数据（GNOME 软件中心读它，见脚本内注释）
+afterAllArtifactBuild: build/linux/after-build.cjs
+npmRebuild: false
+nodeGypRebuild: false
+buildDependenciesFromSource: false
+
+linux:
+  icon: build/icon.png
+  target:
+    - deb
+    - AppImage
+    # tar.gz 作为第三形态：完全不依赖 FUSE、不需要安装，
+    # 解压后直接运行 ./SimpleMail，在 Ubuntu 24.04+ 上比 AppImage 更省事
+    - tar.gz
+  category: Network
+  maintainer: SimpleMail <simplemail@localhost>
+  # ⚠️ synopsis / description 一律用 **ASCII 英文**。
+  #
+  # 踩过的坑：这两个字段会进 deb control，而 GNOME 软件中心在没有 AppStream
+  # 元数据时会回退到它，那条链路上非 ASCII 字符会被丢成「?」——
+  # 表现为双击 .deb 时描述显示成一串问号。中文描述改由两处提供：
+  #   · AppStream 元数据（build/linux/simplemail.metainfo.xml，软件中心读它）
+  #   · .desktop 的 Comment[zh_CN]（应用菜单读它）
+  #
+  # 另外这里必须是**单行**：electron-builder 会把 description 直接写进 .desktop
+  # 的 Comment=，而 desktop 文件不允许续行值，多行会让整个启动项非法。
+  synopsis: Local-first desktop email client
+  description: Local-first desktop email client with permanent local storage and Foxmail archive support
+  # 注意：electron-builder 的 linux.desktop 要的是**扁平键值对**，
+  # 不能再套一层 `entry:` —— 写成嵌套会在 .desktop 里生成一行非法的
+  # `entry=[object Object]`，导致 GNOME 直接忽略整个启动项（图标就不见了）。
+  desktop:
+    Name: SimpleMail
+    GenericName: Mail Client
+    # 注意：不要在这里写 Comment —— 它会被 linux.description 覆盖。
+    # 但带 [zh_CN] 后缀的是另一个键，不会被覆盖，中文界面下优先用它。
+    Comment[zh_CN]: 本地优先的邮件客户端，支持 Foxmail 存档导入导出
+    GenericName[zh_CN]: 邮件客户端
+    Categories: Network;Email;Office;
+    Keywords: email;mail;imap;pop3;smtp;
+    Keywords[zh_CN]: 邮件;邮箱;Foxmail;收发;
+    StartupWMClass: SimpleMail
+
+deb:
+  # 兼容 Ubuntu 22.04 / 24.04 / 26.04：旧包名在 t64 过渡后仍作为 Provides 存在
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libsecret-1-0
+    - libgbm1
+    - libasound2
+    - libuuid1
+  artifactName: ${productName}_${version}_${arch}.deb
+  # ⚠️ 实测：不要在这里写 description。electron-builder 在生成 deb 的
+  # .desktop 时会用 deb.description 去覆盖 Comment=，多行值同样会让启动项非法。
+  # 长描述改放在程序「设置 → 关于」页里，deb 只保留 linux.description 那一条单行说明。
+  # 安装后修正 chrome-sandbox 权限，保证不依赖 --no-sandbox 也能启动
+  afterInstall: build/linux/after-install.sh
+
+appImage:
+  artifactName: ${productName}-${version}-${arch}.AppImage

@@ -1,0 +1,36 @@
+# 依赖
+node_modules/
+
+# 构建产物
+out/
+release/
+
+# 应用图标（由 scripts/make-icon.mjs 生成）
+build/icon.png
+build/icons/
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
+npm-debug.log*
+
+# 本地数据（以防有人在这里跑过）
+*.db
+*.db-wal
+*.db-shm
+
+# TypeScript 增量编译缓存
+*.tsbuildinfo
+
+# asar 解包时可能落在仓库根的中间产物
+/index.js
+/*.asar

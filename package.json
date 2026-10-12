@@ -1,0 +1,51 @@
+{
+  "name": "simplemail",
+  "version": "1.1.4",
+  "description": "SimpleMail - 本地优先的 Linux 邮件客户端（IMAP/POP3 + 永久本地存档 + Foxmail 存档导入导出 + 自动归类规则）",
+  "main": "./out/main/index.js",
+  "author": {
+    "name": "SimpleMail",
+    "email": "simplemail@localhost"
+  },
+  "homepage": "https://localhost/simplemail",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "icon": "node scripts/make-icon.mjs",
+    "dist": "npm run build && electron-builder --linux deb AppImage tar.gz",
+    "dist:deb": "npm run build && electron-builder --linux deb",
+    "dist:appimage": "npm run build && electron-builder --linux AppImage",
+    "selftest": "node scripts/selftest.mjs",
+    "screenshot": "node scripts/screenshot.mjs",
+    "demo": "npm run build && node scripts/screenshot.mjs",
+    "dist:portable": "npm run build && electron-builder --linux tar.gz",
+    "test:launcher": "bash scripts/test-launcher.sh",
+    "test": "npm run typecheck && npm run selftest && npm run test:launcher",
+    "test:package": "bash scripts/verify-package.sh"
+  },
+  "dependencies": {
+    "iconv-lite": "^0.6.3",
+    "imapflow": "^1.0.199",
+    "mailparser": "^3.7.2",
+    "nodemailer": "^6.10.1"
+  },
+  "devDependencies": {
+    "@types/mailparser": "^3.4.5",
+    "@types/node": "^22.15.0",
+    "@types/nodemailer": "^6.4.17",
+    "@types/react": "^18.3.20",
+    "@types/react-dom": "^18.3.6",
+    "@vitejs/plugin-react": "^4.4.1",
+    "electron": "38.4.0",
+    "electron-builder": "25.1.8",
+    "electron-vite": "^3.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}

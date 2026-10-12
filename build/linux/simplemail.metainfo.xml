@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream 元数据。
+
+  为什么需要它：GNOME 软件中心优先展示 AppStream 组件信息；包里没有这份文件时，
+  它会回退到 deb control 里的 Description，而那条回退链路上非 ASCII 字符会被
+  丢成「?」—— 这就是双击 .deb 时描述显示成一串问号的原因。
+
+  两个踩过的坑：
+    1. **不能给 <description> 整体加 xml:lang**。AppStream 1.0 明确不允许
+       （报 metainfo-localized-description-tag），本地化要写在 <p>/<li> 上。
+    2. 组件 id 用 <desktop 文件名> 即可；appstreamcli 会提示建议用 RDNS 命名，
+       那只是警告。但 .desktop 文件名必须和这里的 id 对得上，
+       否则软件中心和桌面应用关联不起来。
+
+  版本号与日期由构建脚本注入（见 build/linux/after-build.cjs）。
+-->
+<component type="desktop-application">
+  <id>simplemail.desktop</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <name>SimpleMail</name>
+  <name xml:lang="zh_CN">SimpleMail 邮件客户端</name>
+
+  <summary>Local-first desktop email client</summary>
+  <summary xml:lang="zh_CN">本地优先的桌面邮件客户端</summary>
+
+  <description>
+    <p>
+      SimpleMail is a local-first desktop email client. Every message you sync is
+      stored permanently on your own computer, so you can read and search your mail
+      without a network connection.
+    </p>
+    <ul>
+      <li>IMAP and POP3 receiving, SMTP sending; built-in presets for QQ Mail, 163, 126, Tencent Exmail, Sina, Gmail and Outlook</li>
+      <li>All messages are kept permanently in a local SQLite database; attachments are stored as separate files</li>
+      <li>Full-text search over subject, body, sender and recipients, with per-field search and relevance ranking</li>
+      <li>Import and export Foxmail mail archives (.fox files, .box + .ind folders, Storage directories)</li>
+      <li>Automatic filing rules, keyboard shortcuts, light and dark themes</li>
+      <li>Works completely offline; nothing is uploaded anywhere</li>
+      <li>Open source, released under the MIT license</li>
+    </ul>
+
+    <p xml:lang="zh_CN">
+      SimpleMail 是一个本地优先的桌面邮件客户端。所有同步下来的邮件都永久保存在
+      你自己的电脑上，断网也能照常阅读和搜索。
+    </p>
+    <ul>
+      <li xml:lang="zh_CN">支持 IMAP / POP3 收件与 SMTP 发信，内置 QQ 邮箱、163、126、腾讯企业邮、新浪、Gmail、Outlook 预设</li>
+      <li xml:lang="zh_CN">邮件永久保存在本地 SQLite 数据库，附件单独存放，程序不会自动清理</li>
+      <li xml:lang="zh_CN">基于 SQLite FTS5 的全文检索，可按发件人 / 收件人 / 主题 / 正文分别搜索并按匹配度排序</li>
+      <li xml:lang="zh_CN">支持导入导出 Foxmail 邮件存档（.fox 文件、.box + .ind 目录、Storage 数据目录）</li>
+      <li xml:lang="zh_CN">支持自动归类与自动删除规则、自定义键盘快捷键、浅色与深色主题</li>
+      <li xml:lang="zh_CN">完全离线可用，不会向任何服务器上传数据</li>
+      <li xml:lang="zh_CN">MIT 许可开源</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">simplemail.desktop</launchable>
+
+  <url type="homepage">https://localhost/simplemail</url>
+
+  <developer id="com.simplemail">
+    <name>SimpleMail</name>
+  </developer>
+
+  <content_rating type="oars-1.1"/>
+
+  <categories>
+    <category>Network</category>
+    <category>Email</category>
+    <category>Office</category>
+  </categories>
+
+  <keywords>
+    <keyword>email</keyword>
+    <keyword>mail</keyword>
+    <keyword>imap</keyword>
+    <keyword>pop3</keyword>
+  </keywords>
+
+  <provides>
+    <binary>simplemail</binary>
+  </provides>
+
+  <!--RELEASES-->
+</component>
