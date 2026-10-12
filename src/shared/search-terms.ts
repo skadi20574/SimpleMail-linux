@@ -194,6 +194,108 @@ export const SEARCH_FIELD_LABELS: { value: SearchField; label: string }[] = [
   { value: 'body', label: '正文' }
 ]
 
+/* ───────────────────────── 多字段并列搜索 ─────────────────────────
+ *
+ * 以前界面是「一个下拉选字段 + 一个输入框」，一次只能限定一个字段。
+ * 现在改成每个字段各有一个并列的输入框，**留空即不限制**，
+ * 多个非空字段之间是 AND —— 可以搜「发件人是张三 且 主题里有合同」。
+ */
+
+/** 多字段并列的搜索条件；每个字段留空表示该字段不参与限制 */
+export interface SearchCriteria {
+  /** 不限定字段，全字段匹配 */
+  all?: string
+  subject?: string
+  from?: string
+  to?: string
+  body?: string
+}
+
+export interface SearchFieldSpec {
+  key: keyof SearchCriteria
+  label: string
+  placeholder: string
+}
+
+/**
+ * 界面上的字段顺序。'all' 是工具栏里那个通用搜索框，
+ * 其余四个是展开面板里的并列输入框。
+ */
+export const SEARCH_CRITERIA_FIELDS: SearchFieldSpec[] = [
+  { key: 'all', label: '全部字段', placeholder: '主题 / 正文 / 发件人 / 收件人' },
+  { key: 'from', label: '发件人', placeholder: 'zhang@qq.com' },
+  { key: 'to', label: '收件人', placeholder: 'lisi@163.com' },
+  { key: 'subject', label: '主题', placeholder: '标题里的字' },
+  { key: 'body', label: '正文', placeholder: '正文里的字' }
+]
+
+/** 单个字段的关键字 → FTS 表达式片段；没有可用内容时返回 null */
+function matchGroupFor(input: string, field: keyof SearchCriteria): string | null {
+  const tokens = tokenize(input.trim())
+  if (!tokens.length) return null
+
+  const narrow = field === 'all' ? null : (field as Exclude<SearchField, 'all'>)
+  const groups: string[] = []
+  for (const token of tokens) {
+    const parts = narrow ? expandForField(token, narrow) : expand(token)
+    if (!parts.length) continue
+    groups.push(parts.length === 1 ? parts[0] : `(${parts.join(' AND ')})`)
+  }
+  return groups.length ? groups.join(' AND ') : null
+}
+
+/**
+ * 多字段条件 → 一个 FTS5 MATCH 表达式。
+ *
+ * 返回 null 表示所有字段都空着（调用方应退化为普通列表查询）。
+ * 只有**一个**字段有内容时，结果与 `buildMatchQuery(关键字, 字段)` 完全一致，
+ * 这样单个字段的行为不会因为改成多框而发生变化。
+ */
+export function buildMatchQueryMulti(criteria: SearchCriteria): string | null {
+  const groups: string[] = []
+  for (const spec of SEARCH_CRITERIA_FIELDS) {
+    const raw = criteria[spec.key]
+    if (!raw || !raw.trim()) continue
+    const group = matchGroupFor(raw, spec.key)
+    if (group) groups.push(group)
+  }
+  if (!groups.length) return null
+  if (groups.length === 1) return groups[0]
+  // 多个字段之间必须同时满足；各自加括号，避免与 token 内部的 AND 混淆
+  return groups.map((g) => `(${g})`).join(' AND ')
+}
+
+/** 有没有任何一个字段填了内容 */
+export function hasAnyCriteria(criteria: SearchCriteria): boolean {
+  return SEARCH_CRITERIA_FIELDS.some((spec) => Boolean(criteria[spec.key]?.trim()))
+}
+
+/** 有几个字段填了内容（界面上显示「N 个条件」） */
+export function countCriteria(criteria: SearchCriteria): number {
+  return SEARCH_CRITERIA_FIELDS.filter((spec) => Boolean(criteria[spec.key]?.trim())).length
+}
+
+/** 把条件描述成一行文字，用于列表标题「搜索：…」 */
+export function describeCriteria(criteria: SearchCriteria): string {
+  const parts: string[] = []
+  for (const spec of SEARCH_CRITERIA_FIELDS) {
+    const raw = criteria[spec.key]?.trim()
+    if (!raw) continue
+    parts.push(spec.key === 'all' ? `「${raw}」` : `${spec.label}「${raw}」`)
+  }
+  return parts.join(' + ')
+}
+
+/** 只保留填了内容的字段（用于发给主进程，避免传一堆空串） */
+export function compactCriteria(criteria: SearchCriteria): SearchCriteria {
+  const out: SearchCriteria = {}
+  for (const spec of SEARCH_CRITERIA_FIELDS) {
+    const raw = criteria[spec.key]?.trim()
+    if (raw) out[spec.key] = raw
+  }
+  return out
+}
+
 /** 高亮用的词表：中文词按原样（连续字符），英文按整词 */
 export function splitHighlightTerms(input: string): string[] {
   const terms: string[] = []
@@ -207,4 +309,26 @@ export function splitHighlightTerms(input: string): string[] {
     }
   }
   return terms
+}
+
+/**
+ * 多字段条件的高亮词表：把所有字段的关键字合起来并去重。
+ *
+ * 去重按小写比较，但保留第一次出现的原始大小写 —— 高亮是大小写不敏感的，
+ * 重复的词只会让正则更长、更慢。
+ */
+export function splitHighlightTermsMulti(criteria: SearchCriteria): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const spec of SEARCH_CRITERIA_FIELDS) {
+    const raw = criteria[spec.key]
+    if (!raw) continue
+    for (const term of splitHighlightTerms(raw)) {
+      const key = term.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(term)
+    }
+  }
+  return out
 }

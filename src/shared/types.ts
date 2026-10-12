@@ -3,9 +3,9 @@
  * 主进程 / preload / 渲染进程三端共用；只包含可结构化克隆的纯数据。
  */
 
-import type { SearchField } from './search-terms'
+import type { SearchField, SearchCriteria } from './search-terms'
 
-export type { SearchField }
+export type { SearchField, SearchCriteria }
 
 export type FolderRole = 'inbox' | 'sent' | 'drafts' | 'trash' | 'junk' | 'archive' | 'custom'
 
@@ -122,6 +122,11 @@ export interface MailListQuery {
   search?: string
   /** 搜索范围：全部字段 / 发件人 / 收件人 / 主题 / 正文 */
   searchField?: SearchField
+  /**
+   * 多字段并列搜索条件：每个字段各自一个关键字，留空即不限制，
+   * 多个非空字段之间是 AND。给了这个就以它为准，忽略上面的 search/searchField。
+   */
+  searchCriteria?: SearchCriteria
   limit?: number
   offset?: number
   /** relevance = 按匹配度（bm25）排序，搜索时默认用它 */

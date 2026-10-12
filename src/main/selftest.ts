@@ -33,7 +33,7 @@ import { importArchive, ensureLocalArchiveAccount } from './foxmail/importer'
 import { exportArchive } from './foxmail/exporter'
 import { FOX_SEPARATOR } from './foxmail/carve'
 import { buildInd, DEFAULT_IND_LAYOUT } from './foxmail/boxind'
-import { buildMatchQuery } from './search'
+import { buildMatchQuery, buildMatchQueryMulti, compactCriteria, countCriteria } from './search'
 import { createAccountDraft } from '@shared/account-defaults'
 import { Pop3Client, syncPop3Account, testPop3 } from './mail/pop3'
 import { generateSelfSignedCert, startMockPop3 } from './testing/pop3-mock'
@@ -1250,6 +1250,131 @@ async function run(root: string): Promise<void> {
     `第一名 subject=${byDate.items[0]?.subject}`
   )
 
+  /* ---------- 17b. 多字段并列搜索（AND） ---------- */
+  //
+  // 界面从「下拉选一个字段」改成了「每个字段一个并列输入框」。
+  // 这里要钉住三件事：留空即不限制、多个字段是 AND、只有一个字段时
+  // 表达式与旧的单字段形式完全一致（行为不能因为改界面而变化）。
+
+  check(
+    '单字段时表达式与旧的单字段形式一致',
+    buildMatchQueryMulti({ subject: '季度' }) === buildMatchQuery('季度', 'subject'),
+    `${buildMatchQueryMulti({ subject: '季度' })} vs ${buildMatchQuery('季度', 'subject')}`
+  )
+
+  check(
+    '两个字段用 AND 连接，各自加括号',
+    buildMatchQueryMulti({ subject: '季度', from: 'alpha' }) ===
+      '(sender:"alpha") AND (cjk_subject:"季 度")',
+    String(buildMatchQueryMulti({ subject: '季度', from: 'alpha' }))
+  )
+
+  check(
+    '字段顺序固定（不受对象字面量书写顺序影响）',
+    buildMatchQueryMulti({ from: 'alpha', subject: '季度' }) ===
+      '(sender:"alpha") AND (cjk_subject:"季 度")',
+    String(buildMatchQueryMulti({ from: 'alpha', subject: '季度' }))
+  )
+  check('全部字段都空 → null（调用方退化成普通列表）', buildMatchQueryMulti({}) === null)
+  check(
+    '只有空白字符也算空',
+    buildMatchQueryMulti({ subject: '   ', from: '\t' }) === null,
+    String(buildMatchQueryMulti({ subject: '   ', from: '\t' }))
+  )
+  check(
+    '空字段被跳过，不影响有内容的字段',
+    buildMatchQueryMulti({ all: 'invoice', subject: '  ' }) === '"invoice"',
+    String(buildMatchQueryMulti({ all: 'invoice', subject: '  ' }))
+  )
+  check(
+    '同一字段里的多个词仍用 AND（与旧行为一致）',
+    buildMatchQueryMulti({ all: '发票 invoice' }) === '"发 票" AND "invoice"',
+    String(buildMatchQueryMulti({ all: '发票 invoice' }))
+  )
+  check(
+    'compactCriteria 去掉空字段并去空白',
+    JSON.stringify(compactCriteria({ subject: ' 季度 ', from: '', body: '   ' })) ===
+      JSON.stringify({ subject: '季度' }),
+    JSON.stringify(compactCriteria({ subject: ' 季度 ', from: '', body: '   ' }))
+  )
+  check(
+    'countCriteria 只数有内容的字段',
+    countCriteria({ subject: 'a', from: '', to: '  ', body: 'b' }) === 2,
+    String(countCriteria({ subject: 'a', from: '', to: '  ', body: 'b' }))
+  )
+
+  const idsOf = (r: { items: { id: number }[] }): number[] =>
+    r.items.map((m) => m.id).sort((a, b) => a - b)
+
+  const onlySubject = repo.listMails({ searchCriteria: { subject: '季度报告阿尔法' }, limit: 20 })
+  const onlyFromBeta = repo.listMails({
+    searchCriteria: { from: 'beta@example.com' },
+    limit: 20
+  })
+  const subjectAndFromBeta = repo.listMails({
+    searchCriteria: { subject: '季度报告阿尔法', from: 'beta@example.com' },
+    limit: 20
+  })
+
+  check(
+    '限定主题只命中主题里有的那封（多字段接口）',
+    idsOf(onlySubject).length === 1 && onlySubject.items[0].id === alphaId,
+    `命中 ${onlySubject.total}`
+  )
+  check(
+    '两个条件都单独有命中，但交集为空 → 结果是 0（证明是 AND 而不是 OR）',
+    onlySubject.total === 1 && onlyFromBeta.total === 1 && subjectAndFromBeta.total === 0,
+    `主题=${onlySubject.total} 发件人=${onlyFromBeta.total} 同时=${subjectAndFromBeta.total}`
+  )
+
+  // 交集性质的通用断言：两条件同时用 → 结果恰好等于各自结果的交集
+  const allHits = repo.listMails({ searchCriteria: { all: '季度报告阿尔法' }, limit: 20 })
+  const bothHits = repo.listMails({
+    searchCriteria: { all: '季度报告阿尔法', from: 'beta@example.com' },
+    limit: 20
+  })
+  const expectIntersect = idsOf(allHits).filter((id) => idsOf(onlyFromBeta).includes(id))
+  check(
+    '多字段结果 = 各字段结果的交集',
+    JSON.stringify(idsOf(bothHits)) === JSON.stringify(expectIntersect),
+    `实际 ${JSON.stringify(idsOf(bothHits))} vs 交集 ${JSON.stringify(expectIntersect)}`
+  )
+
+  const threeWay = repo.listMails({
+    searchCriteria: { subject: '季度报告阿尔法', from: 'alpha', to: 'me@example.com' },
+    limit: 20
+  })
+  check(
+    '三个字段同时限定也生效',
+    threeWay.total === 1 && threeWay.items[0].id === alphaId,
+    `命中 ${threeWay.total}`
+  )
+
+  const noneMatch = repo.listMails({
+    searchCriteria: { from: 'nobody@nowhere.invalid' },
+    limit: 20
+  })
+  check('条件匹配不到任何邮件时返回 0', noneMatch.total === 0, `命中 ${noneMatch.total}`)
+
+  const emptyCriteria = repo.listMails({ searchCriteria: {}, limit: 500 })
+  const noCriteria = repo.listMails({ limit: 500 })
+  check(
+    '空条件等价于不过滤（不会把所有邮件筛没）',
+    emptyCriteria.total === noCriteria.total && noCriteria.total > 5,
+    `空条件 ${emptyCriteria.total} / 无条件 ${noCriteria.total}`
+  )
+
+  const relMulti = repo.listMails({
+    searchCriteria: { all: '季度报告阿尔法' },
+    orderBy: 'relevance',
+    limit: 20
+  })
+  check(
+    '多字段接口下相关度排序依然把匹配度最高的放最前',
+    relMulti.items[0]?.id === hotId,
+    `第一名 subject=${relMulti.items[0]?.subject}`
+  )
+
   /* ---------- 18. 自动归类规则 ---------- */
   section('18. 自动归类 / 自动删除规则')
 
@@ -1827,6 +1952,40 @@ async function run(root: string): Promise<void> {
     check('设置用的是齿轮路径', gearIdx !== -1)
     check('主题用的是太阳路径', sunIdx !== -1)
     check('齿轮与太阳是两个不同图形', gearIdx !== -1 && sunIdx !== -1)
+
+    // ── 按字段搜索面板 ──
+    //
+    // 1.1.6 把「下拉选一个字段」改成了「每个字段一个并列输入框」。
+    // 这里钉住面板与输入框的样式真的进了产物 —— 否则改完界面看起来
+    // 「什么都没发生」，而单测管不到 CSS。
+    const panelRule = ruleOf('.searchpanel')
+    check('按字段搜索面板有样式', panelRule !== null, panelRule ?? '找不到 .searchpanel')
+    check(
+      '面板允许折行（窄窗口下字段框不会被裁掉）',
+      Boolean(panelRule && /flex-wrap:\s*wrap/.test(panelRule)),
+      panelRule ?? ''
+    )
+
+    const fieldInputRule = ruleOf('.searchfield input')
+    check(
+      '字段输入框有样式与宽度',
+      Boolean(fieldInputRule && /width:/.test(fieldInputRule)),
+      fieldInputRule ?? ''
+    )
+    check('字段标签有样式', ruleOf('.searchfield .flabel') !== null)
+
+    // 漏斗图标：与放大镜必须是不同图形，否则「搜索」和「按字段搜索」看起来一样
+    const filterIdx = js.indexOf('M2.2 3.1h11.6')
+    const magIdx = js.indexOf('M10 10l3.6 3.6')
+    check('筛选用的是漏斗路径', filterIdx !== -1)
+    check('漏斗与放大镜是两个不同图形', filterIdx !== -1 && magIdx !== -1 && filterIdx !== magIdx)
+
+    // 渲染层必须真的把多字段条件发给主进程（而不是退回旧的单字段参数）
+    check(
+      '渲染产物里带上了 searchCriteria 参数',
+      js.includes('searchCriteria'),
+      js.includes('searchCriteria') ? '' : '产物里找不到 searchCriteria，界面可能没接上多字段搜索'
+    )
   }
 
 

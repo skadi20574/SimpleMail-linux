@@ -8,5 +8,12 @@ export {
   hasCjk,
   buildCjkIndexText,
   buildMatchQuery,
-  splitHighlightTerms
+  buildMatchQueryMulti,
+  splitHighlightTerms,
+  splitHighlightTermsMulti,
+  hasAnyCriteria,
+  countCriteria,
+  describeCriteria,
+  compactCriteria,
+  SEARCH_CRITERIA_FIELDS
 } from '@shared/search-terms'

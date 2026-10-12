@@ -20,7 +20,7 @@ import type {
 } from '@shared/types'
 import { plain, plainAll } from './sqlite'
 import { getDb } from './index'
-import { buildMatchQuery } from '../search'
+import { buildMatchQuery, buildMatchQueryMulti } from '../search'
 import { indexMail as indexMailRowFts, unindexMail as unindexMailFts } from './fts'
 
 /** node:sqlite 只接受 null/number/bigint/string/Uint8Array */
@@ -578,7 +578,12 @@ export function listMails(query: MailListQuery): MailListResult {
   if (query.flaggedOnly) where.push('m.flagged = 1')
   if (query.hasAttachments) where.push('m.has_attachments = 1')
 
-  const match = query.search ? buildMatchQuery(query.search, query.searchField ?? 'all') : null
+  // 多字段并列条件优先；没给就退回旧的单字段形式（保持向后兼容）
+  const match = query.searchCriteria
+    ? buildMatchQueryMulti(query.searchCriteria)
+    : query.search
+      ? buildMatchQuery(query.search, query.searchField ?? 'all')
+      : null
 
   // 搜索时用 JOIN 把 FTS 表接进来，这样才能取到 bm25() 分数做相关度排序。
   // 不搜索时保持原来的 IN 子查询，少一次 join。

@@ -1,6 +1,6 @@
 {
   "name": "simplemail",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "description": "SimpleMail - 本地优先的 Linux 邮件客户端（IMAP/POP3 + 永久本地存档 + Foxmail 存档导入导出 + 自动归类规则）",
   "main": "./out/main/index.js",
   "author": {

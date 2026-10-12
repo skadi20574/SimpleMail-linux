@@ -52,6 +52,37 @@ function attachScreenshotHook(win: BrowserWindow): void {
               await new Promise((resolve) => setTimeout(resolve, 1200))
             }
           }
+
+          /**
+           * 可选：往若干输入框里填值，多个用 " >> " 分隔，每个写成 `选择器::文本`。
+           *
+           * 必须走原生 value setter 再派发 input 事件 —— 直接 `el.value = x`
+           * 不会触发 React 的 onChange，界面看着填进去了但状态没变，
+           * 这种「假成功」比不测还危险。
+           */
+          const typePairs = process.env.SIMPLEMAIL_SHOT_TYPE
+          if (typePairs) {
+            for (const raw of typePairs.split('>>')) {
+              const sep = raw.indexOf('::')
+              if (sep === -1) continue
+              const selector = raw.slice(0, sep).trim()
+              const value = raw.slice(sep + 2)
+              await win.webContents.executeJavaScript(`
+                (() => {
+                  const el = document.querySelector(${JSON.stringify(selector)})
+                  if (!el) return 'missing'
+                  const setter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value'
+                  ).set
+                  setter.call(el, ${JSON.stringify(value)})
+                  el.dispatchEvent(new Event('input', { bubbles: true }))
+                  return 'ok'
+                })()
+              `)
+              // 比防抖的 320ms 长，确保查询已经发出
+              await new Promise((resolve) => setTimeout(resolve, 1000))
+            }
+          }
           // 开发辅助：SIMPLEMAIL_SHOT_DIAG=1 时打印一份界面状态，便于排查
           // 「设置存了但没生效」这类问题（主题、快捷键、列表条数都在这）。
           if (process.env.SIMPLEMAIL_SHOT_DIAG) {
@@ -88,7 +119,21 @@ function attachScreenshotHook(win: BrowserWindow): void {
                   })(),
                   // 设置与主题两个图标路径是否不同
                   iconPaths: [...document.querySelectorAll('.toolbar .tbtn svg path')]
-                    .slice(-2).map(p => (p.getAttribute('d') || '').slice(0, 24))
+                    .slice(-2).map(p => (p.getAttribute('d') || '').slice(0, 24)),
+                  // ── 按字段搜索面板（1.1.6）──
+                  // 面板是否展开、里面有几个并列输入框、每个框的实际宽度
+                  // （宽度为 0 说明样式没生效，等于用户看不见也点不到）
+                  searchPanel: document.querySelector('.searchpanel') ? '开' : '关',
+                  searchFields: [...document.querySelectorAll('.searchfield')].map(f => ({
+                    label: (f.querySelector('.flabel')?.textContent || '').trim(),
+                    width: Math.round(f.querySelector('input')?.getBoundingClientRect().width || 0)
+                  })),
+                  searchBadge: (document.querySelector('.searchtoggle .badge')?.textContent || '').trim(),
+                  searchPlaceholder: document.querySelector('.searchbox input')?.getAttribute('placeholder') || '',
+                  // 列表头：标题（含完整搜索条件）与总数 —— 总数才是筛选结果，
+                  // rowCount 只反映当前这一页渲染了多少行
+                  listTitle: (document.querySelector('.listhead .title')?.textContent || '').trim(),
+                  listCount: (document.querySelector('.listhead .count')?.textContent || '').trim()
                 }))()
               `)
               console.log('[SimpleMail] 界面诊断：', diag)

@@ -5,11 +5,18 @@ import type {
   Folder,
   MailDetail,
   MailSummary,
-  SearchField,
+  SearchCriteria,
   SyncProgress
 } from './api'
 import { api } from './api'
-import { splitHighlightTerms, SEARCH_FIELD_LABELS as SEARCH_FIELDS } from '@shared/search-terms'
+import {
+  compactCriteria,
+  countCriteria,
+  describeCriteria,
+  hasAnyCriteria,
+  splitHighlightTermsMulti,
+  SEARCH_CRITERIA_FIELDS
+} from '@shared/search-terms'
 import { actionForEvent, resolveShortcuts, SHORTCUT_ACTIONS } from '@shared/shortcuts'
 import type { ThemeMode } from '@shared/types'
 import { applyTheme, watchSystemTheme } from './theme'
@@ -62,10 +69,14 @@ export default function App(): JSX.Element {
   const [detail, setDetail] = useState<MailDetail | null>(null)
   const [allowRemoteImages, setAllowRemoteImages] = useState(false)
 
+  /**
+   * 搜索：工具栏那个通用框（对应 criteria.all）+ 展开面板里四个并列的字段框。
+   * 每个框都可以留空 —— 留空即该字段不参与限制；多个非空字段之间是 AND。
+   */
   const [searchInput, setSearchInput] = useState('')
-  const [search, setSearch] = useState('')
-  /** 搜索范围：全部字段 / 发件人 / 收件人 / 主题 / 正文 */
-  const [searchField, setSearchField] = useState<SearchField>('all')
+  const [searchFields, setSearchFields] = useState<SearchCriteria>({})
+  const [criteria, setCriteria] = useState<SearchCriteria>({})
+  const [searchPanelOpen, setSearchPanelOpen] = useState(false)
   const [orderBy, setOrderBy] = useState<OrderBy>('date')
   const [orderDir, setOrderDir] = useState<'asc' | 'desc'>('desc')
 
@@ -182,10 +193,11 @@ export default function App(): JSX.Element {
     async (offset: number, replace: boolean): Promise<void> => {
       setListLoading(true)
       try {
+        const active = hasAnyCriteria(criteria)
         const result = await api.mails.list({
-          folderId: search ? undefined : (selectedFolderId ?? undefined),
-          search: search || undefined,
-          searchField: search ? searchField : undefined,
+          // 搜索跨全库：一旦有任何条件，就不再限定在当前文件夹里
+          folderId: active ? undefined : (selectedFolderId ?? undefined),
+          searchCriteria: active ? compactCriteria(criteria) : undefined,
           limit: settings.pageSize,
           offset,
           orderBy,
@@ -198,7 +210,7 @@ export default function App(): JSX.Element {
         setListLoading(false)
       }
     },
-    [selectedFolderId, search, searchField, settings.pageSize, orderBy, orderDir]
+    [selectedFolderId, criteria, settings.pageSize, orderBy, orderDir]
   )
 
   useEffect(() => {
@@ -206,23 +218,25 @@ export default function App(): JSX.Element {
   }, [loadMails])
 
   useEffect(() => {
-    // 换了文件夹 / 搜索词 / 排序，原来的选择已经没有意义了
+    // 换了文件夹 / 搜索条件 / 排序，原来的选择已经没有意义了
     setSelectedIds(new Set())
     setAnchorId(null)
     void loadMails(0, true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedFolderId, search, searchField, orderBy, orderDir])
+  }, [selectedFolderId, criteria, orderBy, orderDir])
 
-  // 搜索防抖。开始搜索时自动切到「相关度」排序 —— 匹配度最高的排最前。
+  // 搜索防抖。所有输入框（通用框 + 四个并列字段框）合并成一份条件，
+  // 任一变化都重新查，避免每敲一个字就查一次库。
+  // 开始搜索时自动切到「相关度」排序 —— 匹配度最高的排最前。
   // 之后用户如果点「时间」等排序按钮，不会被这里覆盖（本效果只在输入变化时跑）。
   useEffect(() => {
     const t = window.setTimeout(() => {
-      const next = searchInput.trim()
-      setSearch(next)
-      if (next) setOrderBy('relevance')
+      const next = compactCriteria({ ...searchFields, all: searchInput.trim() })
+      setCriteria(next)
+      if (hasAnyCriteria(next)) setOrderBy('relevance')
     }, 320)
     return () => window.clearTimeout(t)
-  }, [searchInput])
+  }, [searchInput, searchFields])
 
   /* ─────────────── 邮件详情 ─────────────── */
 
@@ -286,7 +300,19 @@ export default function App(): JSX.Element {
     [folders, selectedFolderId]
   )
 
-  const searchTerms = useMemo(() => (search ? splitHighlightTerms(search) : []), [search])
+  const searching = hasAnyCriteria(criteria)
+  const activeCount = countCriteria(criteria)
+  const searchTerms = useMemo(
+    () => splitHighlightTermsMulti(criteria),
+    [criteria]
+  )
+
+  /** 一键清空全部搜索条件（工具栏的通用框 + 面板里四个字段框） */
+  const clearSearch = useCallback((): void => {
+    setSearchInput('')
+    setSearchFields({})
+    setCriteria({})
+  }, [])
 
   /** 生效的快捷键表（用户设置覆盖默认值） */
   const shortcuts = useMemo(() => resolveShortcuts(settings), [settings])
@@ -815,9 +841,12 @@ export default function App(): JSX.Element {
     if (action === 'clearSelection') {
       if (inField) {
         ;(el as HTMLInputElement).blur()
-        if (searchInput) {
-          setSearchInput('')
-          setSearch('')
+        // 在搜索框里按 Esc：清掉这一处输入；如果整体已经没有任何条件了，
+        // 顺手把面板也收起来，免得留一个空面板占地方。
+        if (hasAnyCriteria(criteria)) {
+          clearSearch()
+        } else {
+          setSearchPanelOpen(false)
         }
         return
       }
@@ -1016,31 +1045,12 @@ export default function App(): JSX.Element {
 
         <span className="spacer" />
 
-        <div className="searchscope">
-          <select
-            value={searchField}
-            onChange={(e) => setSearchField(e.target.value as SearchField)}
-            title="选择搜索范围"
-          >
-            {SEARCH_FIELDS.map((f) => (
-              <option key={f.value} value={f.value}>
-                {f.label}
-              </option>
-            ))}
-          </select>
-        </div>
         <div className="searchbox">
           <span className="mag"><Icon name="search" size={13} /></span>
           <input
             ref={searchRef}
             value={searchInput}
-            placeholder={
-              searchField === 'all'
-                ? '搜索邮件（主题 / 正文 / 发件人 / 收件人）　Ctrl+F'
-                : `在「${
-                    SEARCH_FIELDS.find((f) => f.value === searchField)?.label ?? ''
-                  }」中搜索　Ctrl+F`
-            }
+            placeholder="搜索邮件（全部字段）　Ctrl+F"
             onChange={(e) => setSearchInput(e.target.value)}
           />
           {searchInput && (
@@ -1049,7 +1059,43 @@ export default function App(): JSX.Element {
             </button>
           )}
         </div>
+        {/* 展开/收起「按字段搜索」面板。带条件数角标，收起来也知道有几条限制在生效 */}
+        <button
+          className={`tbtn searchtoggle${searchPanelOpen ? ' on' : ''}`}
+          onClick={() => setSearchPanelOpen((v) => !v)}
+          title={searchPanelOpen ? '收起按字段搜索' : '按字段搜索：发件人 / 收件人 / 主题 / 正文，可同时满足多个条件'}
+        >
+          <Icon name="filter" size={15} />
+          <span className="tlabel">字段</span>
+          {activeCount > 0 && <span className="badge">{activeCount}</span>}
+        </button>
       </div>
+
+      {/* 按字段搜索：所有字段并列，留空即不限制，多个条件同时满足（AND） */}
+      {searchPanelOpen && (
+        <div className="searchpanel">
+          {SEARCH_CRITERIA_FIELDS.filter((f) => f.key !== 'all').map((f) => (
+            <label key={f.key} className="searchfield">
+              <span className="flabel">{f.label}</span>
+              <input
+                value={searchFields[f.key] ?? ''}
+                placeholder={f.placeholder}
+                onChange={(e) =>
+                  setSearchFields((prev) => ({ ...prev, [f.key]: e.target.value }))
+                }
+              />
+            </label>
+          ))}
+          <span className="searchpanelhint">
+            {activeCount > 1 ? `${activeCount} 个条件同时满足` : '留空即不限定'}
+          </span>
+          {activeCount > 0 && (
+            <button className="btn small" onClick={clearSearch}>
+              清空条件
+            </button>
+          )}
+        </div>
+      )}
 
       {syncProgress && (
         <div className="syncbar">
@@ -1085,8 +1131,7 @@ export default function App(): JSX.Element {
               setSelectedMailId(null)
               setSelectedIds(new Set())
               setAnchorId(null)
-              setSearchInput('')
-              setSearch('')
+              clearSearch()
             }}
             onAddAccount={() => setAccountDialog({ open: true, account: null })}
             onEditAccount={(a) => setAccountDialog({ open: true, account: a })}
@@ -1155,8 +1200,8 @@ export default function App(): JSX.Element {
               >
                 <MailList
                   title={
-                    search
-                      ? `搜索「${search}」`
+                    searching
+                      ? `搜索 ${describeCriteria(criteria)}`
                       : currentFolder
                         ? `${currentFolder.name}`
                         : '全部邮件'
@@ -1167,14 +1212,14 @@ export default function App(): JSX.Element {
                   activeId={selectedMailId}
                   loading={listLoading}
                   searchTerms={searchTerms}
-                  showAccount={Boolean(search)}
+                  showAccount={searching}
                   orderBy={orderBy}
                   orderDir={orderDir}
                   onChangeOrder={(by, dir) => {
                     setOrderBy(by)
                     setOrderDir(dir)
                   }}
-                  isSearching={Boolean(search)}
+                  isSearching={searching}
                   onRowClick={handleRowClick}
                   onRowDoubleClick={handleRowDoubleClick}
                   onRowContextMenu={(m, e) => void handleRowContextMenu(m, e)}

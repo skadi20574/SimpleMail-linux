@@ -38,6 +38,7 @@ export type IconName =
   | 'mailbox'
   // 界面
   | 'search'
+  | 'filter'
   | 'sun'
   | 'moon'
   | 'autoTheme'
@@ -197,6 +198,10 @@ const PATHS: Record<IconName, JSX.Element> = {
       <circle cx="6.9" cy="6.9" r="4.3" />
       <path d="M10 10l3.6 3.6" />
     </>
+  ),
+  // 漏斗：表示「按字段筛选」。纯几何形状，自绘。
+  filter: (
+    <path d="M2.2 3.1h11.6L9.4 8.4v4.3l-2.8 1.5V8.4z" />
   ),
   sun: (
     <>

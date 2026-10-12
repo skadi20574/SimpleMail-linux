@@ -207,21 +207,79 @@ select {
   min-width: 0;
 }
 
-/* 搜索范围下拉 */
-.searchscope select {
-  height: 30px;
-  padding: 0 6px;
+/**
+ * 「按字段搜索」开关。
+ * 以前这里是一个下拉框（一次只能选一个字段），现在改成开关 ——
+ * 展开后每个字段各有一个并列的输入框，可以同时限定多个字段。
+ */
+.searchtoggle.on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.searchtoggle .badge {
+  height: 16px;
+  min-width: 16px;
+  line-height: 16px;
+  font-size: 10px;
+  margin-left: -1px;
+}
+
+/**
+ * 按字段搜索面板：所有字段并列一行，窗口窄了自动折行。
+ * 每个框都可以留空 —— 留空表示该字段不参与限制。
+ */
+.searchpanel {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+}
+
+.searchfield {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.searchfield .flabel {
+  color: var(--muted);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.searchfield input {
+  height: 26px;
+  width: clamp(110px, 13vw, 180px);
+  padding: 0 8px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   background: var(--panel);
   color: var(--text);
   outline: none;
-  max-width: 110px;
 }
 
-.searchscope select:focus {
+.searchfield input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.searchpanelhint {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* 面板里的「清空条件」比常规按钮矮一点，跟输入框对齐 */
+.btn.small {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
 }
 
 /**
@@ -238,9 +296,13 @@ select {
   }
 }
 
+/* 窄窗口下搜索框缩到最小，把空间让给右侧的按钮 */
 @media (max-width: 1080px) {
-  .searchscope {
-    display: none;
+  .searchbox input {
+    width: 130px;
+  }
+  .searchfield input {
+    width: clamp(96px, 22vw, 150px);
   }
 }
 
