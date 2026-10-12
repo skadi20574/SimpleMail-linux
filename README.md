@@ -1,6 +1,6 @@
 # SimpleMail
 
-一个**本地优先（local-first）**的开源 Linux 桌面邮件客户端（MIT 许可），界面与操作习惯参照
+一个本地优先（local-first）的开源 Linux 桌面邮件客户端（MIT 许可），界面与操作习惯参照
 Foxmail，但完全独立实现，不使用任何商业软件的商标、图标、素材或代码。
 
 特点：
