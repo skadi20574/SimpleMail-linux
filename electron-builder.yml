@@ -16,6 +16,15 @@ files:
 
 asar: true
 compression: maximum
+# MIT 的条件之一是「版权声明与许可声明须随本软件的所有副本一起分发」，
+# 而 .deb / AppImage / tar.gz 都是「副本」—— 所以把两份声明放进 resources/，
+# 让它们跟着每一种安装形态一起走。
+# （.deb 另外还有 /usr/share/doc/simplemail/copyright，见 build/linux/after-build.cjs）
+extraResources:
+  - from: LICENSE
+    to: LICENSE
+  - from: NOTICE.md
+    to: NOTICE.md
 # 给可执行文件套一层 shell 启动器，按 chrome-sandbox 权限自适应决定是否关闭沙箱
 afterPack: build/linux/after-pack.cjs
 # 往 .deb 里塞 AppStream 元数据（GNOME 软件中心读它，见脚本内注释）

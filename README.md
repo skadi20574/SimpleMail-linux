@@ -587,7 +587,9 @@ npm run screenshot    # 播种演示数据并截图到 release/screenshot.png
 
 ## 许可与知识产权
 
-- 本项目以 **MIT 许可**开源，代码托管在 GitHub。
+- 本项目以 **MIT 许可**开源（见 [`LICENSE`](LICENSE)），代码托管在 GitHub。
+  商标说明与第三方组件清单单独放在 [`NOTICE.md`](NOTICE.md)，以便 `LICENSE` 保持
+  与标准 MIT 文本逐字一致（这样 GitHub 和各类许可证扫描器都能正确识别为 MIT）。
 - 本项目为**独立实现**，未使用 Foxmail、Outlook 或其他商业邮件客户端的商标、图标、
   界面素材或任何专有代码。
 - 名称、图标、配色均为原创：应用图标由 `scripts/make-icon.mjs` 用代码绘制，

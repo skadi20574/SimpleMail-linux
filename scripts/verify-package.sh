@@ -193,6 +193,73 @@ for lib in libgtk-3-0 libnss3 libgbm1 libasound2 libsecret-1-0; do
   fi
 done
 
+# ── 6. 许可证声明 ───────────────────────────────────────────────
+#
+# MIT 的条件之一是「版权声明与许可声明须随本软件的所有副本一起分发」，而 .deb 就是
+# 一个副本。Debian 的惯例是把它们放在 /usr/share/doc/<包名>/ 下，其中 copyright
+# 用 DEP-5（机器可读）格式。lintian 对缺 copyright 的包会报 no-copyright-file。
+echo "6. 许可证声明"
+DOCDIR="$WORK/fs/usr/share/doc/simplemail"
+for f in copyright LICENSE NOTICE.md; do
+  if [ -s "$DOCDIR/$f" ]; then
+    ok "/usr/share/doc/simplemail/$f 存在（$(stat -c%s "$DOCDIR/$f") 字节）"
+  else
+    bad "缺少 /usr/share/doc/simplemail/$f —— MIT 要求副本携带许可声明"
+  fi
+done
+
+if [ -s "$DOCDIR/copyright" ]; then
+  if grep -q "^Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/" "$DOCDIR/copyright"; then
+    ok "copyright 是 DEP-5 格式"
+  else
+    bad "copyright 缺少 Format 字段，不是机器可读格式"
+  fi
+
+  # DEP-5 结构：段落之间用空行分隔，头段落必须有 Format，
+  # 其余每个段落都必须同时有 Files 和 License。
+  #
+  # 曾经踩过：Comment 前面多了一个空行，就多出一个没有 Files 字段的孤儿段落，
+  # 这种文件 lintian 直接判非法。
+  if awk '
+      function flush() {
+        if (buf == "") return
+        if (n == 0) { if (buf !~ /(^|\n)Format:/) bad = 1 }
+        else        { if (buf !~ /(^|\n)Files:/ || buf !~ /(^|\n)License:/) bad = 1 }
+        n++
+        buf = ""
+      }
+      /^$/ { flush(); next }
+      { buf = buf $0 "\n" }
+      END  { flush(); exit bad }
+    ' "$DOCDIR/copyright"; then
+    ok "段落结构合法（头段落有 Format，其余都有 Files + License）"
+  else
+    bad "copyright 结构非法：存在缺 Format/Files/License 的段落"
+  fi
+
+  if grep -q "Permission is hereby granted" "$DOCDIR/copyright" \
+     && grep -q "WITHOUT WARRANTY OF ANY KIND" "$DOCDIR/copyright"; then
+    ok "copyright 内含完整 MIT 正文"
+  else
+    bad "copyright 里的 MIT 正文不完整"
+  fi
+fi
+
+# 许可证文件还要随每种安装形态一起走（AppImage / tar.gz 里就在应用根目录的
+# resources/ 下），所以这里顺带检查 extraResources 有没有生效。
+APP_RES="$WORK/fs/opt/SimpleMail/resources"
+if [ -d "$APP_RES" ]; then
+  for f in LICENSE NOTICE.md; do
+    if [ -s "$APP_RES/$f" ]; then
+      ok "resources/$f 随应用分发"
+    else
+      bad "resources/$f 缺失 —— extraResources 没生效"
+    fi
+  done
+else
+  note "（没找到 $APP_RES，跳过 extraResources 检查）"
+fi
+
 # ── 结果 ────────────────────────────────────────────────────────
 echo
 if [ "$FAILED" -eq 0 ]; then

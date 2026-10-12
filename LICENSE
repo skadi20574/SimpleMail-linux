@@ -19,21 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-关于第三方商标的说明 / Third-party trademark notice
-
-本项目（SimpleMail）为独立实现，未使用 Foxmail、Microsoft Outlook 或其他商业邮件
-客户端的商标、图标、界面素材或任何专有代码。
-
-对 Foxmail 邮件存档格式的兼容，是通过公开技术资料以及对用户自有数据文件的兼容性
-分析实现的，目的是让用户能够读取自己的历史邮件。
-
-界面与应用图标均为原创：应用图标由 scripts/make-icon.mjs 以代码绘制，界面图标是
-src/renderer/src/components/Icon.tsx 中的线条 SVG。
-
-本项目基于以下开源组件构建，各自遵循其原始许可证：
-Electron (MIT)、React (MIT)、imapflow (MIT)、nodemailer (MIT)、
-mailparser (MIT)、iconv-lite (MIT)、SQLite (Public Domain，由 Electron 内置的
-Node.js 提供)。
