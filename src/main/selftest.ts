@@ -34,6 +34,13 @@ import { exportArchive } from './foxmail/exporter'
 import { FOX_SEPARATOR } from './foxmail/carve'
 import { buildInd, DEFAULT_IND_LAYOUT } from './foxmail/boxind'
 import { buildMatchQuery, buildMatchQueryMulti, compactCriteria, countCriteria } from './search'
+import {
+  parseMailto,
+  parseMailtoFromArgv,
+  buildMailto,
+  isMailtoRequestEmpty
+} from '@shared/mailto'
+import { DESKTOP_ID, desktopFileBody, mailtoStatus, userDesktopPath } from './mailto'
 import { createAccountDraft } from '@shared/account-defaults'
 import { Pop3Client, syncPop3Account, testPop3 } from './mail/pop3'
 import { generateSelfSignedCert, startMockPop3 } from './testing/pop3-mock'
@@ -2241,6 +2248,186 @@ async function run(root: string): Promise<void> {
 
   const badMove = moveMailsToFolder([dragMail], 999999)
   check('移动到不存在的文件夹时报错', Boolean(badMove.errors.length))
+
+  /* ---------- 25. mailto: 链接解析（系统邮件程序） ---------- */
+  //
+  // 把 SimpleMail 设为系统默认邮件程序后，网页里的「发送邮件」链接会以
+  // 命令行参数的形式传进来。这里覆盖 RFC 6068 的各种写法 ——
+  // 解析错了用户看到的就是「收件人/主题串了」或者「点了没反应」。
+  section('25. mailto: 链接解析（系统邮件程序）')
+
+  check(
+    '只有收件人',
+    (() => {
+      const r = parseMailto('mailto:someone@example.com')
+      return r?.to === 'someone@example.com' && !r.subject && !r.body
+    })(),
+    JSON.stringify(parseMailto('mailto:someone@example.com'))
+  )
+
+  check(
+    '多个收件人（逗号分隔，顺手去重与去空白）',
+    parseMailto('mailto:a@x.com, b@x.com ,a@x.com')?.to === 'a@x.com, b@x.com',
+    String(parseMailto('mailto:a@x.com, b@x.com ,a@x.com')?.to)
+  )
+
+  check(
+    '主题与正文的解码（含中文与空格）',
+    (() => {
+      const r = parseMailto('mailto:a@x.com?subject=%E5%AD%A3%E5%BA%A6%E6%8A%A5%E5%91%8A&body=%E4%BD%A0%E5%A5%BD%20world')
+      return r?.subject === '季度报告' && r?.body === '你好 world'
+    })(),
+    JSON.stringify(parseMailto('mailto:a@x.com?subject=%E5%AD%A3%E5%BA%A6%E6%8A%A5%E5%91%8A&body=%E4%BD%A0%E5%A5%BD%20world'))
+  )
+
+  check(
+    'cc / bcc 也能带',
+    (() => {
+      const r = parseMailto('mailto:a@x.com?cc=c@x.com&bcc=d@x.com')
+      return r?.cc === 'c@x.com' && r?.bcc === 'd@x.com'
+    })(),
+    JSON.stringify(parseMailto('mailto:a@x.com?cc=c@x.com&bcc=d@x.com'))
+  )
+
+  check(
+    '?to= 与路径里的收件人合并',
+    parseMailto('mailto:a@x.com?to=b@x.com')?.to === 'a@x.com, b@x.com',
+    String(parseMailto('mailto:a@x.com?to=b@x.com')?.to)
+  )
+
+  check(
+    '正文里的 & 和 ? 不会被当成参数分隔符',
+    (() => {
+      const r = parseMailto('mailto:a@x.com?subject=A%26B&body=%22x%3Fy%22')
+      return r?.subject === 'A&B' && r?.body === '"x?y"'
+    })(),
+    JSON.stringify(parseMailto('mailto:a@x.com?subject=A%26B&body=%22x%3Fy%22'))
+  )
+
+  // 保留字段大小写不敏感；未知字段忽略（写信窗口没有对应输入框，
+  // 硬塞进正文只会让人困惑）
+  check(
+    '字段名大小写不敏感、未知字段被忽略',
+    (() => {
+      const r = parseMailto('mailto:a@x.com?SUBJECT=Hi&In-Reply-To=%3Cx%40y%3E')
+      return r?.subject === 'Hi' && r?.body === ''
+    })(),
+    JSON.stringify(parseMailto('mailto:a@x.com?SUBJECT=Hi&In-Reply-To=%3Cx%40y%3E'))
+  )
+
+  // RFC 6068：`+` 是普通字符，不像 form-urlencoded 那样代表空格
+  check(
+    '+ 保持为普通字符（RFC 6068，不做空格转换）',
+    parseMailto('mailto:a@x.com?subject=a+b')?.subject === 'a+b',
+    String(parseMailto('mailto:a@x.com?subject=a+b')?.subject)
+  )
+
+  check(
+    '畸形的百分号转义不会让整条链接作废',
+    parseMailto('mailto:a@x.com?subject=100%off')?.subject === '100%off',
+    String(parseMailto('mailto:a@x.com?subject=100%off')?.subject)
+  )
+
+  check(
+    '空 mailto: 也合法（打开空白写信窗口）',
+    (() => {
+      const r = parseMailto('mailto:')
+      return r !== null && isMailtoRequestEmpty(r)
+    })(),
+    JSON.stringify(parseMailto('mailto:'))
+  )
+
+  check('大小写与前后空白都能容忍', parseMailto('  MAILTO:a@x.com  ')?.to === 'a@x.com')
+
+  check('不是 mailto 的字符串返回 null', parseMailto('https://example.com') === null)
+  check('非字符串返回 null', parseMailto(undefined as unknown as string) === null)
+
+  check(
+    '从命令行参数里挑出 mailto（登录/开关参数混在一起）',
+    (() => {
+      const r = parseMailtoFromArgv(['/opt/SimpleMail/simplemail', '--no-sandbox', 'mailto:a@x.com?subject=Hi'])
+      return r?.to === 'a@x.com' && r?.subject === 'Hi'
+    })(),
+    JSON.stringify(parseMailtoFromArgv(['/opt/SimpleMail/simplemail', '--no-sandbox', 'mailto:a@x.com?subject=Hi']))
+  )
+
+  check(
+    '没有 mailto 参数时返回 null（普通启动不该弹出写信窗口）',
+    parseMailtoFromArgv(['/opt/SimpleMail/simplemail', '--no-sandbox']) === null
+  )
+
+  // 往返：拼出来的链接必须能被自己解析回去
+  check(
+    'build → parse 往返一致',
+    (() => {
+      const src = { to: 'a@x.com, b@x.com', cc: 'c@x.com', subject: '季度报告', body: '第一行\n第二行 & 特殊字符' }
+      const back = parseMailto(buildMailto(src))
+      return (
+        back?.to === src.to &&
+        back?.cc === src.cc &&
+        back?.subject === src.subject &&
+        back?.body === src.body
+      )
+    })(),
+    JSON.stringify(parseMailto(buildMailto({ to: 'a@x.com', subject: '季度报告', body: '第一行\n第二行 & 特殊字符' })))
+  )
+
+  /* ---------- 25b. 系统注册（desktop 文件与 xdg 路径） ---------- */
+
+  const desktopBody = desktopFileBody()
+  check(
+    '生成的 desktop 声明了 mailto 处理能力',
+    /^MimeType=x-scheme-handler\/mailto;$/m.test(desktopBody),
+    desktopBody.split('\n').find((l) => l.startsWith('MimeType')) ?? '（没有 MimeType 行）'
+  )
+  check(
+    '生成的 desktop 里 Exec 带 %U（系统靠它把链接当参数传进来）',
+    /^Exec=.*%U$/m.test(desktopBody),
+    desktopBody.split('\n').find((l) => l.startsWith('Exec')) ?? '（没有 Exec 行）'
+  )
+  check(
+    '生成的 desktop 分类为 Network;Email; 且只有一个主分类',
+    /^Categories=Network;Email;$/m.test(desktopBody)
+  )
+  check('desktop 文件 id 固定', DESKTOP_ID === 'simplemail.desktop', DESKTOP_ID)
+
+  // XDG_DATA_HOME 必须被尊重：用户把它指到别处时，桌面环境只去那里找
+  check(
+    '免安装形态的 desktop 落点跟随 XDG_DATA_HOME',
+    (() => {
+      const prev = process.env.XDG_DATA_HOME
+      process.env.XDG_DATA_HOME = '/tmp/simplemail-xdg-probe'
+      const p = userDesktopPath()
+      if (prev === undefined) delete process.env.XDG_DATA_HOME
+      else process.env.XDG_DATA_HOME = prev
+      return p === '/tmp/simplemail-xdg-probe/applications/simplemail.desktop'
+    })()
+  )
+  check(
+    '未设置 XDG_DATA_HOME 时退回 ~/.local/share',
+    (() => {
+      const prev = process.env.XDG_DATA_HOME
+      delete process.env.XDG_DATA_HOME
+      const p = userDesktopPath()
+      if (prev !== undefined) process.env.XDG_DATA_HOME = prev
+      return /\/\.local\/share\/applications\/simplemail\.desktop$/.test(p)
+    })()
+  )
+
+  // mailtoStatus 在真实环境里也要能跑通（不抛异常、字段齐全）
+  const mtStatus = mailtoStatus()
+  check(
+    'mailtoStatus 返回完整状态',
+    ['desktopFile', 'currentDefault', 'isDefault', 'canSetAutomatically', 'manualCommand'].every(
+      (k) => k in mtStatus
+    ),
+    JSON.stringify(mtStatus)
+  )
+  check(
+    '手动命令是标准写法',
+    mtStatus.manualCommand === 'xdg-mime default simplemail.desktop x-scheme-handler/mailto',
+    mtStatus.manualCommand
+  )
 
   /* ---------- 收尾 ---------- */
   closeDb()

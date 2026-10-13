@@ -50,6 +50,8 @@ import {
 import { openArchive, inspectArchive } from './foxmail/archive'
 import { importArchive } from './foxmail/importer'
 import { exportArchive } from './foxmail/exporter'
+import { mailtoStatus, setMailtoDefault } from './mailto'
+import { takePendingMailto, ackMailto } from './mailto-queue'
 
 type Sender = Electron.IpcMainInvokeEvent
 
@@ -737,6 +739,28 @@ export function registerIpc(): void {
             : `rm -rf "${appPath}"`,
       hasPkexec: existsSync('/usr/bin/pkexec') || existsSync('/bin/pkexec')
     }
+  })
+
+  /**
+   * 默认邮件程序（mailto: 处理程序）的状态与设置。
+   *
+   * 不给「安装时自动抢」：默认程序是用户的选择，安装包擅自换掉不礼貌，
+   * 用户往往过很久才发现点邮件链接跳到了别处。只提供查询 + 用户主动切换。
+   */
+  ipcMain.handle('app:mailtoStatus', () => mailtoStatus())
+  ipcMain.handle('app:mailtoSetDefault', () => setMailtoDefault())
+
+  /**
+   * 渲染进程挂载后主动拉取待处理的 mailto 请求。
+   *
+   * 不能只靠主进程推送：页面加载完成（did-finish-load）可能早于 React 的
+   * effect 建立订阅，那条消息就丢了 —— 表现为「程序起来了但没打开写信窗口」。
+   * 拉取 + 推送两条路都送到同一条时，渲染进程按 id 去重。
+   */
+  ipcMain.handle('mailto:take', () => takePendingMailto())
+  ipcMain.handle('mailto:ack', (_e, id: number) => {
+    ackMailto(id)
+    return { ok: true }
   })
 
   /**

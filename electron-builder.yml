@@ -58,6 +58,12 @@ linux:
   # 就是 Network;Email;News;）。改这个值前先用 desktop-file-validate 验一遍。
   category: Network;Email;
   maintainer: SimpleMail <simplemail@localhost>
+  # 声明本程序能处理 mailto: 链接 —— 这一行是「能被选为系统邮件程序」的前提。
+  # 没有它，用户在系统设置里根本看不到 SimpleMail 这个选项，点网页里的邮件
+  # 链接也只会落到浏览器或别的客户端上。
+  # （Exec 里已经有 %U，系统就是靠它把链接当参数传进来的）
+  mimeTypes:
+    - x-scheme-handler/mailto
   # ⚠️ synopsis / description 一律用 **ASCII 英文**。
   #
   # 踩过的坑：这两个字段会进 deb control，而 GNOME 软件中心在没有 AppStream

@@ -5,6 +5,7 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 import type { ExportProgress, ImportProgress, SyncProgress } from '@shared/types'
+import type { MailtoDelivery } from '@shared/types'
 
 const invoke = <T>(channel: string, ...args: unknown[]): Promise<T> =>
   ipcRenderer.invoke(channel, ...args) as Promise<T>
@@ -106,7 +107,20 @@ const api = {
     installInfo: () => invoke('app:installInfo'),
     uninstall: () => invoke('app:uninstall'),
     wipeData: () => invoke('app:wipeData'),
-    restart: () => invoke('app:restart')
+    restart: () => invoke('app:restart'),
+    /** 默认邮件程序（mailto: 处理程序）的状态与切换 */
+    mailtoStatus: () => invoke('app:mailtoStatus'),
+    mailtoSetDefault: () => invoke('app:mailtoSetDefault')
+  },
+  /**
+   * 系统把 mailto: 链接交给我们时触发。
+   * 首次启动带链接、以及程序已在运行时再点链接（由第二个实例转交）都会走这里。
+   */
+  mailto: {
+    onOpen: (cb: (delivery: MailtoDelivery) => void) => on('mailto:open', cb),
+    /** 挂载后主动拉取待处理的请求（推送可能早于订阅建立） */
+    take: () => invoke('mailto:take'),
+    ack: (id: number) => invoke('mailto:ack', id)
   }
 }
 

@@ -25,6 +25,7 @@
  */
 
 import { app, protocol, net } from 'electron'
+import type { BrowserWindow } from 'electron'
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -34,7 +35,9 @@ import * as repo from './db/repo'
 import { appPaths } from './paths'
 import { applyThemeToNative, loadSettings, saveSettings } from './settings'
 import { ensureLocalArchiveAccount } from './foxmail/importer'
-import { createMainWindow, getAllWindows } from './windows'
+import { createMainWindow, getAllWindows, getMainWindow } from './windows'
+import { parseMailtoFromArgv, type MailtoRequest } from '@shared/mailto'
+import { enqueueMailto } from './mailto-queue'
 
 // 自定义协议：邮件正文里的 cid: 内联图片通过它读取磁盘上的附件文件。
 // 必须在 app ready 之前完成注册。
@@ -78,25 +81,92 @@ function bootstrapData(): void {
   saveSettings(settings)
 }
 
-app.whenReady().then(() => {
-  try {
-    appPaths()
-    bootstrapData()
-    // 主题模式交给 Electron：'system' 会跟随系统，深浅由用户选择时强制
-    applyThemeToNative()
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error('[SimpleMail] 初始化失败:', err)
+/* ─────────────────────────── 单实例 ───────────────────────────
+ *
+ * 注册成系统邮件程序之后，系统处理 `mailto:` 链接的方式是**再启动一个进程**，
+ * 把链接当命令行参数传进来。如果不做单实例，用户每点一次链接就会：
+ *   · 多出一个窗口，
+ *   · 多一份数据库连接 —— 很快就有两个进程同时写同一个 SQLite 文件。
+ *
+ * 所以：第一个实例持有锁并负责处理参数；后启动的实例把参数转交给它后立刻退出。
+ */
+
+let initialMailtoHandled = false
+
+/** 把主窗口叫到前台，没有就建一个 */
+function focusMainWindow(): BrowserWindow {
+  const win = getMainWindow() ?? createMainWindow()
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+  return win
+}
+
+/**
+ * 把解析好的 mailto 请求交给渲染进程去打开写信窗口。
+ *
+ * ⚠️ 这里**不能**只发一条 IPC 就完事：窗口可能还在加载，或者页面加载完了
+ * 但 React 的 effect 还没订阅 —— 那样消息会丢，用户看到的是「点了邮件链接
+ * 却什么都没发生」。所以请求同时进队列（见 mailto-queue.ts），
+ * 渲染进程挂载后会主动拉一次。
+ */
+function dispatchMailto(request: MailtoRequest): void {
+  const delivery = enqueueMailto(request)
+
+  // 窗口还没建就先不发，等它建好；队列里那份会被渲染进程挂载时拉走
+  if (!getMainWindow()) return
+
+  const win = focusMainWindow()
+  const send = (): void => {
+    if (!win.isDestroyed()) win.webContents.send('mailto:open', delivery)
   }
+  if (win.webContents.isLoading()) win.webContents.once('did-finish-load', send)
+  else send()
+}
 
-  registerIpc()
-  registerAttachmentProtocol()
-  createMainWindow()
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
 
-  app.on('activate', () => {
-    if (getAllWindows().length === 0) createMainWindow()
+if (!hasSingleInstanceLock) {
+  // ⚠️ 这条分支里**不要**做任何初始化（数据库、IPC、窗口）——
+  // 那正好会造成「两个进程同时操作同一个库」。
+  app.quit()
+} else {
+  app.on('second-instance', (_event, argv) => {
+    const request = parseMailtoFromArgv(argv)
+    if (request) {
+      dispatchMailto(request)
+      return
+    }
+    // 不是 mailto 触发的（比如用户又点了一次图标）：只把已有窗口叫到前台
+    if (getMainWindow()) focusMainWindow()
   })
-})
+
+  app.whenReady().then(() => {
+    try {
+      appPaths()
+      bootstrapData()
+      // 主题模式交给 Electron：'system' 会跟随系统，深浅由用户选择时强制
+      applyThemeToNative()
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[SimpleMail] 初始化失败:', err)
+    }
+
+    registerIpc()
+    registerAttachmentProtocol()
+    createMainWindow()
+
+    // 首次启动就带着 mailto:（用户直接点了链接，当时没有实例在跑）
+    if (!initialMailtoHandled) {
+      initialMailtoHandled = true
+      const initial = parseMailtoFromArgv(process.argv)
+      if (initial) dispatchMailto(initial)
+    }
+    app.on('activate', () => {
+      if (getAllWindows().length === 0) createMainWindow()
+    })
+  })
+}
 
 /**
  * 开发辅助：SIMPLEMAIL_TEST_RESTART=1 时，启动两秒后真的走一遍重启流程。

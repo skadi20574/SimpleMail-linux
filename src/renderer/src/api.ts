@@ -21,12 +21,16 @@ import type {
   MailDetail,
   MailListQuery,
   MailListResult,
+  MailtoStatus,
+  MailtoSetResult,
   SearchField,
   SearchCriteria,
   Rule,
   RuleDraft,
   RulePreview,
-  SyncProgress
+  SyncProgress,
+  MailtoRequest,
+  MailtoDelivery
 } from '@shared/types'
 
 export interface FolderOpResult extends BatchOutcome {
@@ -163,6 +167,18 @@ interface RawApi {
     uninstall(): Promise<{ ok: boolean; error?: string }>
     wipeData(): Promise<{ ok: boolean; error?: string }>
     restart(): Promise<{ ok: boolean; relaunched: boolean }>
+    /** 默认邮件程序（mailto: 处理程序） */
+    mailtoStatus(): Promise<MailtoStatus>
+    mailtoSetDefault(): Promise<MailtoSetResult>
+  }
+  /**
+   * 系统把 mailto: 链接交给我们时触发（首次启动带链接、或程序已在运行时
+   * 由第二个实例转交）。返回取消订阅函数。
+   */
+  mailto: {
+    onOpen(cb: (delivery: MailtoDelivery) => void): () => void
+    take(): Promise<MailtoDelivery | null>
+    ack(id: number): Promise<{ ok: boolean }>
   }
 }
 
@@ -198,6 +214,8 @@ export type {
   MailListResult,
   MailProtocol,
   MailSummary,
+  MailtoStatus,
+  MailtoSetResult,
   SearchField,
   SearchCriteria,
   Rule,

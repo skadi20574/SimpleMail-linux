@@ -18,6 +18,7 @@ import {
   SEARCH_CRITERIA_FIELDS
 } from '@shared/search-terms'
 import { actionForEvent, resolveShortcuts, SHORTCUT_ACTIONS } from '@shared/shortcuts'
+import type { MailtoRequest, MailtoDelivery } from '@shared/types'
 import type { ThemeMode } from '@shared/types'
 import { applyTheme, watchSystemTheme } from './theme'
 import Sidebar from './components/Sidebar'
@@ -118,6 +119,12 @@ export default function App(): JSX.Element {
 
   const offsetRef = useRef(0)
   const searchRef = useRef<HTMLInputElement | null>(null)
+  /** 供 mailto 监听读取最新的账户列表（订阅本身要保持稳定，不能每次账户变化都重订） */
+  const accountsRef = useRef<Account[]>([])
+  /** 账户还没加载完就先到了的 mailto 请求，先存着，等账户到位再打开 */
+  const pendingMailtoRef = useRef<MailtoRequest | null>(null)
+  /** 已经处理过的 mailto 投递 id：推送与挂载拉取可能重复投递同一条 */
+  const handledMailtoIdRef = useRef(0)
   const toastTimer = useRef<number | null>(null)
   const splitRef = useRef(0.42)
   /** 事件回调（同步完成等）里必须调用「最新」的加载函数，
@@ -237,6 +244,93 @@ export default function App(): JSX.Element {
     }, 320)
     return () => window.clearTimeout(t)
   }, [searchInput, searchFields])
+
+  /* ─────────────── 系统邮件链接（mailto:） ─────────────── */
+
+  /**
+   * 发信优先用配好了 SMTP 的账户，其次任意在线账户。
+   * 本地存档账户（isLocal）只能读不能发，必须排除掉。
+   */
+  const pickSendAccount = useCallback((list: Account[]): Account | undefined => {
+    const online = list.filter((a) => !a.isLocal)
+    return online.find((a) => a.smtpHost) ?? online[0]
+  }, [])
+
+  const openMailtoCompose = useCallback(
+    (req: MailtoRequest, list: Account[]): void => {
+      const account = pickSendAccount(list)
+      if (!account) {
+        notify('收到邮件链接，但还没有可发信的邮箱账户 —— 请先在「设置」里添加一个')
+        return
+      }
+      const sig = account.signature ? `\n\n--\n${account.signature}` : ''
+      setComposer({
+        accountId: account.id,
+        to: req.to,
+        cc: req.cc,
+        bcc: req.bcc,
+        subject: req.subject,
+        // 链接里带了正文就用链接的；没带才补上签名
+        body: req.body || sig,
+        attachments: []
+      })
+    },
+    [notify, pickSendAccount]
+  )
+
+  /**
+   * 处理一条 mailto 投递。
+   *
+   * 推送（mailto:open）与挂载时的主动拉取（mailto:take）可能把同一条送两次，
+   * 所以按自增 id 去重 —— 否则用户会看到写信窗口被打开两次。
+   */
+  const handleMailto = useCallback(
+    (delivery: MailtoDelivery): void => {
+      if (delivery.id <= handledMailtoIdRef.current) return
+      handledMailtoIdRef.current = delivery.id
+      void api.mailto.ack(delivery.id)
+
+      const list = accountsRef.current
+      if (!list.length) {
+        // 账户还没读回来：先记下，等账户到位再打开。
+        // 直接丢弃的话，用户在程序没开着时点邮件链接就会「什么都不发生」。
+        pendingMailtoRef.current = delivery.request
+        return
+      }
+      openMailtoCompose(delivery.request, list)
+    },
+    [openMailtoCompose]
+  )
+
+  useEffect(() => {
+    accountsRef.current = accounts
+    // 账户到位了，把之前排队的那条 mailto 处理掉
+    if (accounts.length && pendingMailtoRef.current) {
+      const queued = pendingMailtoRef.current
+      pendingMailtoRef.current = null
+      openMailtoCompose(queued, accounts)
+    }
+  }, [accounts, openMailtoCompose])
+
+  useEffect(() => api.mailto.onOpen(handleMailto), [handleMailto])
+
+  /**
+   * 挂载后主动拉一次。
+   *
+   * 主进程推送有可能早于本 effect 建立订阅（页面的 did-finish-load 先到），
+   * 那条消息就丢了 —— 表现为「程序起来了但没打开写信窗口」。
+   * 所以这里主动问一次；与推送重复时靠 id 去重。
+   */
+  useEffect(() => {
+    void (async () => {
+      try {
+        const delivery = await api.mailto.take()
+        if (delivery) handleMailto(delivery)
+      } catch {
+        /* 主进程还没注册好，等推送那条路 */
+      }
+    })()
+  }, [handleMailto])
 
   /* ─────────────── 邮件详情 ─────────────── */
 

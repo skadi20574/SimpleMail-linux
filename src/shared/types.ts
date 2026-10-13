@@ -4,8 +4,9 @@
  */
 
 import type { SearchField, SearchCriteria } from './search-terms'
+import type { MailtoRequest } from './mailto'
 
-export type { SearchField, SearchCriteria }
+export type { SearchField, SearchCriteria, MailtoRequest }
 
 export type FolderRole = 'inbox' | 'sent' | 'drafts' | 'trash' | 'junk' | 'archive' | 'custom'
 
@@ -418,4 +419,43 @@ export interface AppPaths {
   logs: string
   version: string
   platform: string
+}
+
+/* ─────────────── 系统邮件程序（mailto: 处理程序） ─────────────── */
+
+export type InstallKind = 'deb' | 'appimage' | 'portable' | 'unknown'
+
+export interface MailtoStatus {
+  installKind: InstallKind
+  /** 实际生效的 desktop 文件路径 */
+  desktopFile: string
+  /** 是不是包管理器安装的（deb），这种不用我们写文件 */
+  systemWide: boolean
+  desktopFileExists: boolean
+  /** 该 desktop 文件里有没有声明 x-scheme-handler/mailto */
+  declaresMailto: boolean
+  /** 系统当前的默认邮件程序，例如 firefox.desktop */
+  currentDefault: string
+  isDefault: boolean
+  xdgAvailable: boolean
+  canSetAutomatically: boolean
+  /** 界面上展示给用户复制的手动命令 */
+  manualCommand: string
+  /** 免安装形态回退用的用户级 desktop 文件路径 */
+  userDesktopFile: string
+}
+
+export interface MailtoSetResult {
+  ok: boolean
+  message: string
+  status: MailtoStatus
+}
+
+/**
+ * 投递给渲染进程的一条 mailto 请求。
+ * id 用于去重：推送和「挂载时主动拉取」可能把同一条送两次。
+ */
+export interface MailtoDelivery {
+  id: number
+  request: MailtoRequest
 }

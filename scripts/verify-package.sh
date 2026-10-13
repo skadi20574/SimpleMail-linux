@@ -124,6 +124,21 @@ if [ -f "$DESKTOP" ]; then
   else
     bad "有 $MAIN_CATS 个主分类（Categories=$CATS）—— 应用菜单里会重复出现条目"
   fi
+
+  # mailto: 处理能力 —— 缺了这一行，用户在系统设置里根本看不到 SimpleMail，
+  # 点网页里的邮件链接只会落到浏览器或别的客户端上。
+  if grep -q "^MimeType=.*x-scheme-handler/mailto" "$DESKTOP"; then
+    ok "声明了 x-scheme-handler/mailto（可被选为邮件程序）"
+  else
+    bad "启动项没有声明 x-scheme-handler/mailto —— 系统不会把邮件链接交给它"
+  fi
+
+  # %U 必须保留：系统就是靠它把 mailto: 链接当参数传给程序的
+  if grep -qE "^Exec=.*%U" "$DESKTOP"; then
+    ok "Exec 带 %U（链接能作为参数传进来）"
+  else
+    bad "Exec 少了 %U —— 即使被选为邮件程序也收不到链接内容"
+  fi
 else
   bad "没有找到 simplemail.desktop"
 fi

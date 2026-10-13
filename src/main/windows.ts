@@ -133,7 +133,21 @@ function attachScreenshotHook(win: BrowserWindow): void {
                   // 列表头：标题（含完整搜索条件）与总数 —— 总数才是筛选结果，
                   // rowCount 只反映当前这一页渲染了多少行
                   listTitle: (document.querySelector('.listhead .title')?.textContent || '').trim(),
-                  listCount: (document.querySelector('.listhead .count')?.textContent || '').trim()
+                  listCount: (document.querySelector('.listhead .count')?.textContent || '').trim(),
+                  // ── 写信窗口（验证 mailto: 链接有没有正确填进来）──
+                  // 按「标签 → 输入框」取名，比按序号稳妥（抄送/密送是条件渲染的）
+                  composer: document.querySelector('.composer') ? '开' : '关',
+                  composerFields: (() => {
+                    const out = {}
+                    for (const row of document.querySelectorAll('.compose-row')) {
+                      const label = (row.querySelector('label')?.textContent || '').trim()
+                      const el = row.querySelector('input, textarea')
+                      if (label && el) out[label] = el.value
+                    }
+                    const body = document.querySelector('.composer textarea')
+                    if (body) out['正文'] = body.value
+                    return out
+                  })()
                 }))()
               `)
               console.log('[SimpleMail] 界面诊断：', diag)

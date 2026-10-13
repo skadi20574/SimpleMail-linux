@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { Account, AppSettings } from '../api'
+import type { Account, AppSettings, MailtoStatus } from '../api'
 import { api } from '../api'
 import { formatSize } from '../utils'
 import Icon from './Icon'
@@ -61,6 +61,10 @@ export default function SettingsDialog(props: Props): JSX.Element {
   } | null>(null)
   const [uninstalling, setUninstalling] = useState(false)
   const [wiping, setWiping] = useState(false)
+  /** 默认邮件程序（mailto:）的状态 */
+  const [mailto, setMailto] = useState<MailtoStatus | null>(null)
+  const [mailtoLoading, setMailtoLoading] = useState(false)
+  const [mailtoSetting, setMailtoSetting] = useState(false)
   /** 清除数据的界内确认（不用 window.prompt —— Electron 根本没实现它） */
   const [wipeConfirm, setWipeConfirm] = useState(false)
   const [wipeWord, setWipeWord] = useState('')
@@ -90,16 +94,18 @@ export default function SettingsDialog(props: Props): JSX.Element {
 
   useEffect(() => {
     void (async () => {
-      const [st, p, ar, info] = await Promise.all([
+      const [st, p, ar, info, mt] = await Promise.all([
         api.app.stats(),
         api.app.paths(),
         api.archives.list(),
-        api.app.installInfo()
+        api.app.installInfo(),
+        api.app.mailtoStatus()
       ])
       setStats(st)
       setPaths(p)
       setArchives(ar)
       setInstall(info)
+      setMailto(mt)
     })()
   }, [])
 
@@ -499,6 +505,84 @@ export default function SettingsDialog(props: Props): JSX.Element {
 
           {tab === 'about' && (
             <>
+              {/* ── 默认邮件程序（mailto:） ── */}
+              <div className="field">
+                <label>系统邮件链接</label>
+                <div className="hint">
+                  让网页和文档里的「发送邮件」链接（<code>mailto:</code>）直接打开 SimpleMail
+                  的写信窗口，而不是跳到浏览器或别的客户端。
+                </div>
+                {mailto ? (
+                  <div className="statusline info" style={{ display: 'block', marginTop: 8 }}>
+                    <div>
+                      当前系统的邮件程序：
+                      <b>{mailto.currentDefault || '（未设置）'}</b>
+                      {mailto.isDefault && <span style={{ color: 'var(--ok)' }}> ← 就是 SimpleMail</span>}
+                    </div>
+                    {!mailto.declaresMailto && (
+                      <div className="hint" style={{ marginTop: 4, color: 'var(--warn)' }}>
+                        还没找到声明了 <code>x-scheme-handler/mailto</code> 的桌面项。
+                        .deb 安装版由安装包提供；免安装版点下面的按钮会写一份到
+                        <code>{mailto.userDesktopFile}</code>。
+                      </div>
+                    )}
+                    {!mailto.xdgAvailable && (
+                      <div className="hint" style={{ marginTop: 4, color: 'var(--danger)' }}>
+                        系统里没有 <code>xdg-mime</code>（属于 xdg-utils 包），
+                        无法在界面内切换。请手动执行：<code>{mailto.manualCommand}</code>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="hint">正在检测…</div>
+                )}
+                <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    className="btn"
+                    disabled={mailtoSetting || !mailto?.canSetAutomatically || mailto?.isDefault}
+                    onClick={async () => {
+                      setMailtoSetting(true)
+                      try {
+                        const r = await api.app.mailtoSetDefault()
+                        if (r.ok) {
+                          props.onDone(r.message)
+                          setMailto(await api.app.mailtoStatus())
+                        } else {
+                          props.onError(r.message)
+                          setMailto(r.status)
+                        }
+                      } catch (err) {
+                        props.onError(`设置失败：${(err as Error).message}`)
+                      } finally {
+                        setMailtoSetting(false)
+                      }
+                    }}
+                  >
+                    <Icon name="filter" size={14} />
+                    {mailtoSetting
+                      ? ' 正在设置…'
+                      : mailto?.isDefault
+                        ? ' 已经是默认邮件程序'
+                        : ' 设为默认邮件程序'}
+                  </button>
+                  <button
+                    className="btn"
+                    disabled={mailtoLoading}
+                    onClick={async () => {
+                      setMailtoLoading(true)
+                      setMailto(await api.app.mailtoStatus())
+                      setMailtoLoading(false)
+                    }}
+                  >
+                    <Icon name="sync" size={14} /> 重新检测
+                  </button>
+                </div>
+                <div className="hint" style={{ marginTop: 6 }}>
+                  只影响<b>当前用户</b>，随时可以在系统「默认应用」里改回去。
+                  等价命令：<code>{mailto?.manualCommand ?? ''}</code>
+                </div>
+              </div>
+
               {/* ── 卸载与清理 ── */}
               <div className="field">
                 <label>卸载</label>
