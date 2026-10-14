@@ -137,6 +137,8 @@ function attachScreenshotHook(win: BrowserWindow): void {
                   // ── 写信窗口（验证 mailto: 链接有没有正确填进来）──
                   // 按「标签 → 输入框」取名，比按序号稳妥（抄送/密送是条件渲染的）
                   composer: document.querySelector('.composer') ? '开' : '关',
+                  composerAttachments: [...document.querySelectorAll('.attachchip .fname')]
+                    .map(el => (el.textContent || '').trim()),
                   composerFields: (() => {
                     const out = {}
                     for (const row of document.querySelectorAll('.compose-row')) {

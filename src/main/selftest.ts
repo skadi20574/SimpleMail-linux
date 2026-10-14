@@ -40,7 +40,13 @@ import {
   buildMailto,
   isMailtoRequestEmpty
 } from '@shared/mailto'
-import { DESKTOP_ID, desktopFileBody, mailtoStatus, userDesktopPath } from './mailto'
+import {
+  DESKTOP_ID,
+  desktopFileBody,
+  mailtoStatus,
+  resolveMailtoAttachments,
+  userDesktopPath
+} from './mailto'
 import { createAccountDraft } from '@shared/account-defaults'
 import { Pop3Client, syncPop3Account, testPop3 } from './mail/pop3'
 import { generateSelfSignedCert, startMockPop3 } from './testing/pop3-mock'
@@ -2371,6 +2377,164 @@ async function run(root: string): Promise<void> {
     })(),
     JSON.stringify(parseMailto(buildMailto({ to: 'a@x.com', subject: '季度报告', body: '第一行\n第二行 & 特殊字符' })))
   )
+
+  /* ---------- 25a. 附件（右键文件 →「邮件发送」） ---------- */
+  //
+  // 文件管理器里「邮件发送…」执行的是 `xdg-email --attach <文件>`，
+  // 而 xdg-email 对非 Thunderbird 的客户端只会把附件塞进 mailto URL：
+  //   mailto:addr?subject=...&attach=%2Ftmp%2F%E6%96%87%E4%BB%B6.txt
+  // 所以「拿得到附件」的关键就是把 attach 参数解析出来。
+
+  check(
+    '单个 attach 参数',
+    (() => {
+      const r = parseMailto('mailto:a@x.com?attach=%2Ftmp%2F%25E6%2596%2587.txt')
+      return r?.attachments.length === 1
+    })(),
+    JSON.stringify(parseMailto('mailto:a@x.com?attach=%2Ftmp%2F%25E6%2596%2587.txt')?.attachments)
+  )
+
+  check(
+    '多个 attach 参数按顺序保留',
+    (() => {
+      const r = parseMailto('mailto:a@x.com?attach=%2Ftmp%2Fa.txt&attach=%2Ftmp%2Fb.pdf')
+      return r?.attachments.join('|') === '/tmp/a.txt|/tmp/b.pdf'
+    })(),
+    String(parseMailto('mailto:a@x.com?attach=%2Ftmp%2Fa.txt&attach=%2Ftmp%2Fb.pdf')?.attachments.join('|'))
+  )
+
+  check(
+    '带空格与中文的路径能正确解码',
+    (() => {
+      const url = buildMailto({ to: 'a@x.com', attachments: ['/tmp/我的 文件.txt'] })
+      return parseMailto(url)?.attachments[0] === '/tmp/我的 文件.txt'
+    })(),
+    String(parseMailto(buildMailto({ to: 'a@x.com', attachments: ['/tmp/我的 文件.txt'] }))?.attachments[0])
+  )
+
+  check(
+    'file:// 形式的附件路径被还原成普通路径',
+    (() => {
+      const r = parseMailto('mailto:a@x.com?attach=file%3A%2F%2F%2Ftmp%2Fx.txt')
+      return r?.attachments[0] === '/tmp/x.txt'
+    })(),
+    String(parseMailto('mailto:a@x.com?attach=file%3A%2F%2F%2Ftmp%2Fx.txt')?.attachments[0])
+  )
+
+  check(
+    '重复的附件只保留一次',
+    (() => {
+      const r = parseMailto('mailto:a@x.com?attach=%2Ftmp%2Fa.txt&attach=%2Ftmp%2Fa.txt')
+      return r?.attachments.length === 1
+    })(),
+    JSON.stringify(parseMailto('mailto:a@x.com?attach=%2Ftmp%2Fa.txt&attach=%2Ftmp%2Fa.txt')?.attachments)
+  )
+
+  check(
+    '只有附件、没有收件人时不算「空请求」',
+    (() => {
+      const r = parseMailto('mailto:?attach=%2Ftmp%2Fa.txt')
+      return r !== null && !isMailtoRequestEmpty(r)
+    })(),
+    JSON.stringify(parseMailto('mailto:?attach=%2Ftmp%2Fa.txt'))
+  )
+
+  check(
+    '链接里既没有收件人也没有附件才算空',
+    isMailtoRequestEmpty(parseMailto('mailto:')!)
+  )
+
+  check(
+    'attach 与其它字段可以共存',
+    (() => {
+      const r = parseMailto(
+        'mailto:a@x.com?subject=%E5%AD%A3%E5%BA%A6%E6%8A%A5%E5%91%8A&body=%E8%AF%B7%E7%9C%8B&attach=%2Ftmp%2Fa.txt'
+      )
+      return r?.subject === '季度报告' && r?.body === '请看' && r?.attachments[0] === '/tmp/a.txt'
+    })(),
+    JSON.stringify(parseMailto('mailto:a@x.com?subject=%E5%AD%A3%E5%BA%A6%E6%8A%A5%E5%91%8A&body=%E8%AF%B7%E7%9C%8B&attach=%2Ftmp%2Fa.txt'))
+  )
+
+  // 有的文件管理器把文件当裸参数传进来，而不是走 attach=
+  const fakeExisting = (p: string): boolean => ['/tmp/one.txt', '/tmp/two.pdf'].includes(p)
+  check(
+    '裸文件参数也会被收作附件',
+    (() => {
+      const r = parseMailtoFromArgv(
+        ['/opt/SimpleMail/simplemail', '--no-sandbox', '/tmp/one.txt', '/tmp/two.pdf'],
+        fakeExisting
+      )
+      return r?.attachments.join('|') === '/tmp/one.txt|/tmp/two.pdf'
+    })(),
+    String(parseMailtoFromArgv(['x', '/tmp/one.txt', '/tmp/two.pdf'], fakeExisting)?.attachments.join('|'))
+  )
+  check(
+    '不存在的裸参数不会被当成附件',
+    (() => {
+      const r = parseMailtoFromArgv(['x', '/tmp/nope.txt', '--flag'], fakeExisting)
+      return r === null
+    })()
+  )
+  // argv[0] 是程序自身路径（打包后是 simplemail.bin）—— 它确实是个存在的
+  // 文件，所以必须显式跳过。曾经就是这么把程序二进制当成附件带上的。
+  check(
+    'argv[0]（程序自身）不会被当成附件',
+    (() => {
+      const r = parseMailtoFromArgv(
+        ['/opt/SimpleMail/simplemail.bin', 'mailto:a@x.com', '/tmp/one.txt'],
+        fakeExisting
+      )
+      return r?.attachments.join('|') === '/tmp/one.txt'
+    })(),
+    JSON.stringify(
+      parseMailtoFromArgv(
+        ['/opt/SimpleMail/simplemail.bin', 'mailto:a@x.com', '/tmp/one.txt'],
+        fakeExisting
+      )?.attachments
+    )
+  )
+  check(
+    '开关参数不会被误当成文件（即使同名文件存在）',
+    (() => {
+      const r = parseMailtoFromArgv(['x', '--user-data-dir=/tmp/one.txt'], fakeExisting)
+      return r === null
+    })()
+  )
+  check(
+    'mailto 与裸文件参数可以同时出现',
+    (() => {
+      const r = parseMailtoFromArgv(
+        ['x', 'mailto:a@x.com?subject=Hi', '/tmp/one.txt'],
+        fakeExisting
+      )
+      return r?.to === 'a@x.com' && r?.attachments.join('|') === '/tmp/one.txt'
+    })(),
+    JSON.stringify(parseMailtoFromArgv(['x', 'mailto:a@x.com?subject=Hi', '/tmp/one.txt'], fakeExisting))
+  )
+  check(
+    'mailto 里已有同一附件时不重复添加',
+    (() => {
+      const r = parseMailtoFromArgv(
+        ['x', 'mailto:a@x.com?attach=%2Ftmp%2Fone.txt', '/tmp/one.txt'],
+        fakeExisting
+      )
+      return r?.attachments.length === 1
+    })(),
+    JSON.stringify(parseMailtoFromArgv(['x', 'mailto:a@x.com?attach=%2Ftmp%2Fone.txt', '/tmp/one.txt'], fakeExisting)?.attachments)
+  )
+
+  // 主进程的附件校验：找不到的必须单独报出来，不能默默丢
+  const attProbe = join(root, 'attachment-probe.txt')
+  writeFileSync(attProbe, '附件内容')
+  const attRes = resolveMailtoAttachments([attProbe, join(root, 'no-such-file.bin')])
+  check(
+    '附件校验：存在的进列表、不存在的单独报出',
+    attRes.files.length === 1 &&
+      attRes.files[0].filename === 'attachment-probe.txt' &&
+      attRes.missing.length === 1,
+    JSON.stringify({ files: attRes.files.map((f) => f.filename), missing: attRes.missing })
+  )
+  check('附件校验会带上文件大小', attRes.files[0]?.size > 0, String(attRes.files[0]?.size))
 
   /* ---------- 25b. 系统注册（desktop 文件与 xdg 路径） ---------- */
 

@@ -15,7 +15,7 @@
  * 放在单独模块里是因为请求由 index.ts 产生、由 ipc.ts 提供拉取接口。
  */
 
-import type { MailtoDelivery, MailtoRequest } from '@shared/types'
+import type { MailtoDelivery, MailtoRequest, ResolvedAttachment } from '@shared/types'
 
 export type { MailtoDelivery }
 
@@ -23,9 +23,13 @@ let seq = 0
 let pending: MailtoDelivery | null = null
 
 /** 记下一条待投递请求并返回它（含用于去重的 id） */
-export function enqueueMailto(request: MailtoRequest): MailtoDelivery {
+export function enqueueMailto(
+  request: MailtoRequest,
+  attachments: ResolvedAttachment[] = [],
+  missingAttachments: string[] = []
+): MailtoDelivery {
   seq += 1
-  pending = { id: seq, request }
+  pending = { id: seq, request, attachments, missingAttachments }
   return pending
 }
 

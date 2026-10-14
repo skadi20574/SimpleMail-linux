@@ -18,7 +18,7 @@ import {
   SEARCH_CRITERIA_FIELDS
 } from '@shared/search-terms'
 import { actionForEvent, resolveShortcuts, SHORTCUT_ACTIONS } from '@shared/shortcuts'
-import type { MailtoRequest, MailtoDelivery } from '@shared/types'
+import type { MailtoDelivery } from '@shared/types'
 import type { ThemeMode } from '@shared/types'
 import { applyTheme, watchSystemTheme } from './theme'
 import Sidebar from './components/Sidebar'
@@ -122,7 +122,7 @@ export default function App(): JSX.Element {
   /** 供 mailto 监听读取最新的账户列表（订阅本身要保持稳定，不能每次账户变化都重订） */
   const accountsRef = useRef<Account[]>([])
   /** 账户还没加载完就先到了的 mailto 请求，先存着，等账户到位再打开 */
-  const pendingMailtoRef = useRef<MailtoRequest | null>(null)
+  const pendingMailtoRef = useRef<MailtoDelivery | null>(null)
   /** 已经处理过的 mailto 投递 id：推送与挂载拉取可能重复投递同一条 */
   const handledMailtoIdRef = useRef(0)
   const toastTimer = useRef<number | null>(null)
@@ -257,7 +257,8 @@ export default function App(): JSX.Element {
   }, [])
 
   const openMailtoCompose = useCallback(
-    (req: MailtoRequest, list: Account[]): void => {
+    (delivery: MailtoDelivery, list: Account[]): void => {
+      const req = delivery.request
       const account = pickSendAccount(list)
       if (!account) {
         notify('收到邮件链接，但还没有可发信的邮箱账户 —— 请先在「设置」里添加一个')
@@ -272,8 +273,22 @@ export default function App(): JSX.Element {
         subject: req.subject,
         // 链接里带了正文就用链接的；没带才补上签名
         body: req.body || sig,
-        attachments: []
+        // 右键文件 →「邮件发送」时，附件是主进程校验过存在性的
+        attachments: delivery.attachments.map((a) => ({
+          path: a.path,
+          filename: a.filename
+        }))
       })
+
+      // 找不到的附件必须说出来 —— 否则用户以为附上了，实际根本没附
+      if (delivery.missingAttachments.length) {
+        const first = delivery.missingAttachments[0]
+        notify(
+          delivery.missingAttachments.length === 1
+            ? `附件不存在，已跳过：${first}`
+            : `有 ${delivery.missingAttachments.length} 个附件不存在，已跳过（第一个：${first}）`
+        )
+      }
     },
     [notify, pickSendAccount]
   )
@@ -294,10 +309,10 @@ export default function App(): JSX.Element {
       if (!list.length) {
         // 账户还没读回来：先记下，等账户到位再打开。
         // 直接丢弃的话，用户在程序没开着时点邮件链接就会「什么都不发生」。
-        pendingMailtoRef.current = delivery.request
+        pendingMailtoRef.current = delivery
         return
       }
-      openMailtoCompose(delivery.request, list)
+      openMailtoCompose(delivery, list)
     },
     [openMailtoCompose]
   )

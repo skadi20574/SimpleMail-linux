@@ -12,12 +12,65 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  chmodSync,
+  statSync
+} from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
-import type { InstallKind, MailtoStatus, MailtoSetResult } from '@shared/types'
+import { basename, join } from 'node:path'
+import type {
+  InstallKind,
+  MailtoStatus,
+  MailtoSetResult,
+  ResolvedAttachment
+} from '@shared/types'
 
 export type { InstallKind, MailtoStatus, MailtoSetResult }
+
+/** 某个 argv 条目是不是真实存在的普通文件（给「右键 → 邮件发送」识别裸文件参数用） */
+export function isExistingFile(path: string): boolean {
+  try {
+    return statSync(path).isFile()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 校验 mailto 里的附件路径。
+ *
+ * 分开返回「能用的」和「找不到的」：找不到的必须让用户看见，
+ * 否则会出现「我以为附上了、其实没附」这种最糟糕的失败方式。
+ */
+export function resolveMailtoAttachments(paths: readonly string[]): {
+  files: ResolvedAttachment[]
+  missing: string[]
+} {
+  const files: ResolvedAttachment[] = []
+  const missing: string[] = []
+  const seen = new Set<string>()
+
+  for (const raw of paths) {
+    const path = raw.trim()
+    if (!path || seen.has(path)) continue
+    seen.add(path)
+    try {
+      const st = statSync(path)
+      if (!st.isFile()) {
+        missing.push(path)
+        continue
+      }
+      files.push({ path, filename: basename(path) || 'attachment', size: st.size })
+    } catch {
+      missing.push(path)
+    }
+  }
+  return { files, missing }
+}
 
 /** 应用在系统里的 desktop 文件 id —— 必须与 electron-builder 生成的文件名一致 */
 export const DESKTOP_ID = 'simplemail.desktop'

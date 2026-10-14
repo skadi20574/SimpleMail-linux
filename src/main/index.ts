@@ -38,6 +38,21 @@ import { ensureLocalArchiveAccount } from './foxmail/importer'
 import { createMainWindow, getAllWindows, getMainWindow } from './windows'
 import { parseMailtoFromArgv, type MailtoRequest } from '@shared/mailto'
 import { enqueueMailto } from './mailto-queue'
+import { isExistingFile, resolveMailtoAttachments } from './mailto'
+
+/**
+ * 判断某个 argv 条目能不能当附件。
+ *
+ * 除了「是个真实文件」之外，还必须排除**程序自己的可执行文件**：
+ * argv[0] 已经在 parseMailtoFromArgv 里跳过了，但保险起见再挡一道 ——
+ * 打包后它是 simplemail.bin，真的是个存在的文件，一旦混进去，
+ * 用户每次发邮件都会莫名其妙带上一个几十 MB 的附件。
+ */
+function isAttachmentCandidate(path: string): boolean {
+  if (path === process.execPath) return false
+  return isExistingFile(path)
+}
+import { diag, installDiagnostics, logStartup } from './diagnostics'
 
 // 自定义协议：邮件正文里的 cid: 内联图片通过它读取磁盘上的附件文件。
 // 必须在 app ready 之前完成注册。
@@ -111,7 +126,10 @@ function focusMainWindow(): BrowserWindow {
  * 渲染进程挂载后会主动拉一次。
  */
 function dispatchMailto(request: MailtoRequest): void {
-  const delivery = enqueueMailto(request)
+  // 附件在这里校验：渲染进程拿不到 fs，「文件到底在不在」必须由主进程确认，
+  // 并把找不到的路径一并带回界面 —— 默默丢掉附件是最糟的失败方式。
+  const { files, missing } = resolveMailtoAttachments(request.attachments)
+  const delivery = enqueueMailto(request, files, missing)
 
   // 窗口还没建就先不发，等它建好；队列里那份会被渲染进程挂载时拉走
   if (!getMainWindow()) return
@@ -124,15 +142,34 @@ function dispatchMailto(request: MailtoRequest): void {
   else send()
 }
 
-const hasSingleInstanceLock = app.requestSingleInstanceLock()
+installDiagnostics()
+
+/**
+ * 取单实例锁。
+ *
+ * ⚠️ 这里必须 try/catch：这是**模块加载期**的调用，一旦抛异常（例如
+ * userData 所在的文件系统不支持它用的 socket/lock 机制），进程会立刻
+ * 消失 —— 用户看到的就是「闪退」，终端里什么都没有，极难排查。
+ * 拿不到锁时退化成「允许多开」：多开不好，但比程序起不来强得多。
+ */
+let hasSingleInstanceLock = true
+try {
+  hasSingleInstanceLock = app.requestSingleInstanceLock()
+} catch (err) {
+  diag(`[单实例] requestSingleInstanceLock 抛异常，退化为允许多开：${String(err)}`)
+  hasSingleInstanceLock = true
+}
+
+logStartup({ singleInstanceLock: hasSingleInstanceLock })
 
 if (!hasSingleInstanceLock) {
   // ⚠️ 这条分支里**不要**做任何初始化（数据库、IPC、窗口）——
   // 那正好会造成「两个进程同时操作同一个库」。
+  diag('[退出] 未取到单实例锁（已有实例在运行），本次进程退出')
   app.quit()
 } else {
   app.on('second-instance', (_event, argv) => {
-    const request = parseMailtoFromArgv(argv)
+    const request = parseMailtoFromArgv(argv, isAttachmentCandidate)
     if (request) {
       dispatchMailto(request)
       return
@@ -159,7 +196,7 @@ if (!hasSingleInstanceLock) {
     // 首次启动就带着 mailto:（用户直接点了链接，当时没有实例在跑）
     if (!initialMailtoHandled) {
       initialMailtoHandled = true
-      const initial = parseMailtoFromArgv(process.argv)
+      const initial = parseMailtoFromArgv(process.argv, isAttachmentCandidate)
       if (initial) dispatchMailto(initial)
     }
     app.on('activate', () => {

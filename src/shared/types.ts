@@ -458,4 +458,15 @@ export interface MailtoSetResult {
 export interface MailtoDelivery {
   id: number
   request: MailtoRequest
+  /** 已经校验过存在性的附件（右键文件 →「邮件发送」带过来的） */
+  attachments: ResolvedAttachment[]
+  /** 想附但找不到、或不是普通文件的路径 —— 必须明确告诉用户，不能默默丢掉 */
+  missingAttachments: string[]
+}
+
+/** 主进程校验过、可以直接放进写信窗口的附件 */
+export interface ResolvedAttachment {
+  path: string
+  filename: string
+  size: number
 }
