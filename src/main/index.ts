@@ -149,7 +149,7 @@ installDiagnostics()
  *
  * ⚠️ 这里必须 try/catch：这是**模块加载期**的调用，一旦抛异常（例如
  * userData 所在的文件系统不支持它用的 socket/lock 机制），进程会立刻
- * 消失 —— 用户看到的就是「闪退」，终端里什么都没有，极难排查。
+ * 消失，而终端里什么都没有，极难排查。
  * 拿不到锁时退化成「允许多开」：多开不好，但比程序起不来强得多。
  */
 let hasSingleInstanceLock = true
