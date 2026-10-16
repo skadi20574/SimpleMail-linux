@@ -416,13 +416,25 @@ select {
 
 /* ───────────────────────── 左侧栏 ───────────────────────── */
 
+/**
+ * 文件夹栏（最左一栏）。
+ * 宽度不再是写死的 232px —— 外层 .sidebarwrap 由用户拖动决定，
+ * 所以这里用 100% 撑满容器。
+ * 右侧不再画边线：紧邻的 .splitter 已经有边界，画两条会叠成双线。
+ */
 .sidebar {
-  width: 232px;
-  flex: 0 0 auto;
+  width: 100%;
   background: var(--panel-2);
-  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  min-height: 0;
+}
+
+/* 承载文件夹栏的可变宽度容器（宽度来自设置里的 sidebarWidth） */
+.sidebarwrap {
+  flex: 0 0 auto;
+  display: flex;
+  min-width: 0;
   min-height: 0;
 }
 

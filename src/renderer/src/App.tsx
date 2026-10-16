@@ -19,6 +19,7 @@ import {
 } from '@shared/search-terms'
 import { actionForEvent, resolveShortcuts, SHORTCUT_ACTIONS } from '@shared/shortcuts'
 import type { MailtoDelivery } from '@shared/types'
+import { nextAfterDelete } from '@shared/mail-nav'
 import type { ThemeMode } from '@shared/types'
 import { applyTheme, watchSystemTheme } from './theme'
 import Sidebar from './components/Sidebar'
@@ -34,6 +35,7 @@ import Icon from './components/Icon'
 
 const DEFAULT_SETTINGS: AppSettings = {
   splitRatio: 0.42,
+  sidebarWidth: 232,
   pageSize: 200,
   syncBatch: 500,
   autoDownloadBodies: true,
@@ -127,6 +129,9 @@ export default function App(): JSX.Element {
   const handledMailtoIdRef = useRef(0)
   const toastTimer = useRef<number | null>(null)
   const splitRef = useRef(0.42)
+  /** 最左侧文件夹栏宽度；拖动时用 ref 存最新值，松手才写回设置 */
+  const [sidebarWidth, setSidebarWidth] = useState(232)
+  const sidebarRef = useRef(232)
   /** 事件回调（同步完成等）里必须调用「最新」的加载函数，
    *  否则会拿着旧闭包去查全库，把已经筛选好的列表覆盖掉。 */
   const loadMailsRef = useRef<(offset: number, replace: boolean) => Promise<void>>(async () => {})
@@ -160,6 +165,8 @@ export default function App(): JSX.Element {
       setAllowRemoteImages(s.allowRemoteImages)
       splitRef.current = s.splitRatio
       setSplitPct(Math.round(s.splitRatio * 100))
+      sidebarRef.current = s.sidebarWidth
+      setSidebarWidth(s.sidebarWidth)
       await refreshAccountsAndFolders()
 
       const accs = await api.accounts.list()
@@ -377,9 +384,48 @@ export default function App(): JSX.Element {
 
   const [splitPct, setSplitPct] = useState(42)
   const dragging = useRef(false)
+  const sidebarDragging = useRef(false)
+
+  /** 文件夹栏宽度的上下限：下限保证文件夹名看得见，上限避免正文被挤没 */
+  const SIDEBAR_MIN = 150
+  const SIDEBAR_MAX = 460
+
+  /**
+   * 把宽度夹到合法区间 —— 这就是「自动适应」：
+   * 除了固定的上下限，还要保证主区域（列表 + 正文）留得下可用宽度，
+   * 否则窗口一窄正文就被压没了。所以上限同时受窗口宽度约束。
+   */
+  const clampSidebar = useCallback((w: number): number => {
+    const byWindow = Math.max(SIDEBAR_MIN, window.innerWidth - 560)
+    return Math.round(Math.min(SIDEBAR_MAX, byWindow, Math.max(SIDEBAR_MIN, w)))
+  }, [])
+
+  /**
+   * 窗口尺寸变化时自动收窄文件夹栏。
+   *
+   * 只夹当前值、**不写回设置** —— 用户拖出来的宽度是他的偏好，
+   * 不该因为一次把窗口缩小就被永久改掉；窗口再变大时仍按偏好显示。
+   */
+  useEffect(() => {
+    const onResize = (): void => {
+      setSidebarWidth((w) => {
+        const next = clampSidebar(w)
+        sidebarRef.current = next
+        return next
+      })
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [clampSidebar])
 
   useEffect(() => {
     const move = (e: MouseEvent): void => {
+      if (sidebarDragging.current) {
+        const w = clampSidebar(e.clientX)
+        sidebarRef.current = w
+        setSidebarWidth(w)
+        return
+      }
       if (!dragging.current) return
       const container = document.getElementById('main-column')
       if (!container) return
@@ -390,6 +436,11 @@ export default function App(): JSX.Element {
       setSplitPct(Math.round(ratio * 100))
     }
     const up = (): void => {
+      if (sidebarDragging.current) {
+        sidebarDragging.current = false
+        document.body.style.cursor = ''
+        void api.settings.set({ sidebarWidth: sidebarRef.current })
+      }
       if (!dragging.current) return
       dragging.current = false
       document.body.style.cursor = ''
@@ -645,13 +696,20 @@ export default function App(): JSX.Element {
       notify(err instanceof Error ? err.message : String(err))
     }
 
-    setSelectedIds(new Set())
-    setAnchorId(null)
-    setSelectedMailId(null)
-    setDetail(null)
+    // 删完自动跳到「下一封」，好连续查看 + 删除，不用每次回列表点。
+    // 选下一封而不是上一封，是因为删掉后列表会往上收，原来位置显示的就是它。
+    const next = nextMailAfterDelete(ids)
+    setSelectedIds(next ? new Set([next.id]) : new Set())
+    setAnchorId(next?.id ?? null)
+    setSelectedMailId(next?.id ?? null)
+    if (!next) setDetail(null)
     await refreshAccountsAndFolders()
     void loadMails(0, true)
   }
+
+  /** 删除之后该选中哪一封（纯逻辑在 @shared/mail-nav，那里有单测） */
+  const nextMailAfterDelete = (deletedIds: number[]): MailSummary | null =>
+    nextAfterDelete(mails, deletedIds, selectedMailId ?? detail?.id ?? null)
 
   /** Delete / Shift+Delete：对当前选择执行删除 */
   const deleteSelection = async (permanent: boolean): Promise<void> => {
@@ -1223,8 +1281,10 @@ export default function App(): JSX.Element {
       {/* ───────────── 主体 ───────────── */}
       <div className="body">
         {!showWelcome && (
-          <Sidebar
-            accounts={accounts}
+          <>
+            <div className="sidebarwrap" style={{ width: sidebarWidth }}>
+              <Sidebar
+                accounts={accounts}
             folders={folders}
             selectedFolderId={selectedFolderId}
             collapsed={collapsed}
@@ -1271,9 +1331,26 @@ export default function App(): JSX.Element {
                 defaultValue: ''
               })
             }
-            stats={statsText}
-            version={appVersion}
-          />
+                stats={statsText}
+                version={appVersion}
+              />
+            </div>
+            {/* 文件夹栏与邮件区的分隔条：拖动调宽，双击复位 */}
+            <div
+              className="splitter vsplit"
+              onMouseDown={() => {
+                sidebarDragging.current = true
+                document.body.style.cursor = 'col-resize'
+              }}
+              onDoubleClick={() => {
+                const w = 232
+                sidebarRef.current = w
+                setSidebarWidth(w)
+                void api.settings.set({ sidebarWidth: w })
+              }}
+              title="拖动调整文件夹栏宽度（双击复位）"
+            />
+          </>
         )}
 
         <div className="main" id="main-column">

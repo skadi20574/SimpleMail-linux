@@ -83,6 +83,76 @@ function attachScreenshotHook(win: BrowserWindow): void {
               await new Promise((resolve) => setTimeout(resolve, 1000))
             }
           }
+          /**
+           * 可选：模拟按键，多个用 " >> " 分隔。格式 `键名` 或 `修饰键+键名`，
+           * 例如 `Delete`、`Shift+Delete`。
+           *
+           * 专门用来验证键盘驱动的行为（比如按 Delete 删除后是否跳到下一封）——
+           * 这类逻辑只有真按键才会走，光点鼠标测不到。
+           */
+          const keySeq = process.env.SIMPLEMAIL_SHOT_KEY
+          if (keySeq) {
+            for (const raw of keySeq.split('>>')) {
+              const parts = raw.trim().split('+')
+              const key = parts.pop() ?? ''
+              if (!key) continue
+              const shift = parts.some((p) => /^shift$/i.test(p))
+              const ctrl = parts.some((p) => /^(ctrl|control)$/i.test(p))
+              await win.webContents.executeJavaScript(`
+                (() => {
+                  const ev = new KeyboardEvent('keydown', {
+                    key: ${JSON.stringify(key)},
+                    shiftKey: ${shift},
+                    ctrlKey: ${ctrl},
+                    bubbles: true,
+                    cancelable: true
+                  })
+                  window.dispatchEvent(ev)
+                  return 'ok'
+                })()
+              `)
+              await new Promise((resolve) => setTimeout(resolve, 1200))
+            }
+          }
+
+          /**
+           * 可选：模拟拖拽，多个用 " >> " 分隔，每个写成 `选择器::目标X`。
+           *
+           * 拖动改宽度这类交互只有真的走 mousedown → mousemove → mouseup
+           * 才会生效（只有 click 是不行的），所以单独做一个钩子，
+           * 否则「三栏可拖拽」这条只能靠肉眼看截图。
+           */
+          const dragSeq = process.env.SIMPLEMAIL_SHOT_DRAG
+          if (dragSeq) {
+            for (const raw of dragSeq.split('>>')) {
+              const sep = raw.indexOf('::')
+              if (sep === -1) continue
+              const selector = raw.slice(0, sep).trim()
+              const toX = Number(raw.slice(sep + 2))
+              if (!Number.isFinite(toX)) continue
+              await win.webContents.executeJavaScript(`
+                (() => {
+                  const el = document.querySelector(${JSON.stringify(selector)})
+                  if (!el) return 'missing'
+                  const r = el.getBoundingClientRect()
+                  const fromX = r.x + r.width / 2
+                  const y = r.y + r.height / 2
+                  const mk = (type, x) => new MouseEvent(type, {
+                    clientX: x, clientY: y, bubbles: true, cancelable: true, buttons: 1
+                  })
+                  el.dispatchEvent(mk('mousedown', fromX))
+                  const steps = 8
+                  for (let i = 1; i <= steps; i++) {
+                    window.dispatchEvent(mk('mousemove', fromX + ((${toX} - fromX) * i) / steps))
+                  }
+                  window.dispatchEvent(mk('mouseup', ${toX}))
+                  return 'ok'
+                })()
+              `)
+              await new Promise((resolve) => setTimeout(resolve, 900))
+            }
+          }
+
           // 开发辅助：SIMPLEMAIL_SHOT_DIAG=1 时打印一份界面状态，便于排查
           // 「设置存了但没生效」这类问题（主题、快捷键、列表条数都在这）。
           if (process.env.SIMPLEMAIL_SHOT_DIAG) {
@@ -132,20 +202,36 @@ function attachScreenshotHook(win: BrowserWindow): void {
                   searchPlaceholder: document.querySelector('.searchbox input')?.getAttribute('placeholder') || '',
                   // 列表头：标题（含完整搜索条件）与总数 —— 总数才是筛选结果，
                   // rowCount 只反映当前这一页渲染了多少行
-                  // 布局几何：用坐标证明「列表在左、正文在右」，而不是靠肉眼看截图
+                  // 布局几何：用坐标证明「三栏并排」，而不是靠肉眼看截图
                   layout: (() => {
-                    const l = document.querySelector('.listwrap')
-                    const p = document.querySelector('.preview')
+                    const box = (sel) => {
+                      const el = document.querySelector(sel)
+                      if (!el) return null
+                      const r = el.getBoundingClientRect()
+                      return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }
+                    }
+                    const s = box('.sidebarwrap'), l = box('.listwrap'), p = box('.preview')
                     if (!l || !p) return null
-                    const lr = l.getBoundingClientRect()
-                    const pr = p.getBoundingClientRect()
+                    const sameRow = s && p ? Math.abs(s.y - p.y) < 4 : null
+                    const order = s ? s.x < l.x && l.x < p.x : l.x < p.x
                     return {
-                      listX: Math.round(lr.x), listW: Math.round(lr.width),
-                      previewX: Math.round(pr.x), previewW: Math.round(pr.width),
-                      sameRow: Math.abs(lr.y - pr.y) < 4,
-                      listLeftOfPreview: lr.right <= pr.left + 8
+                      sidebar: s, list: l, preview: p,
+                      total: s ? s.w + l.w + p.w : l.w + p.w,
+                      sameRow, ordered: order,
+                      listX: l.x, listW: l.w, previewX: p.x, previewW: p.w,
+                      sameRowListPreview: Math.abs(l.y - p.y) < 4,
+                      listLeftOfPreview: l.right ?? (l.x + l.w) <= p.x + 8
                     }
                   })(),
+                  // 当前预览的邮件主题 + 列表前几行的主题：
+                  // 用来验证「删除后自动跳到下一封」到底跳对了没有
+                  previewSubject: (document.querySelector('.preview-subject')?.textContent || '').trim(),
+                  previewId: (() => {
+                    const a = document.querySelector('.mailrow.active')
+                    return a ? (a.getAttribute('data-mail-id') || '') : ''
+                  })(),
+                  rowSubjects: [...document.querySelectorAll('.mailrow .subject')]
+                    .slice(0, 6).map(el => (el.textContent || '').trim()),
                   listTitle: (document.querySelector('.listhead .title')?.textContent || '').trim(),
                   listCount: (document.querySelector('.listhead .count')?.textContent || '').trim(),
                   // ── 写信窗口（验证 mailto: 链接有没有正确填进来）──

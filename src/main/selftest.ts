@@ -28,6 +28,7 @@ import { closeDb } from './db'
 import { openDatabase } from './db/sqlite'
 import { initSchema, migrate, SCHEMA_VERSION } from './db/schema'
 import { hasVisibleAttachments } from './mail/parser'
+import { nextAfterDelete } from '@shared/mail-nav'
 import { checkDataDirTarget, legacyDataDir } from './data-dir'
 import * as repo from './db/repo'
 import { collectUnit, inMemoryLimit, iterateUnit, openArchive, inspectArchive } from './foxmail/archive'
@@ -2258,6 +2259,54 @@ async function run(root: string): Promise<void> {
 
   const badMove = moveMailsToFolder([dragMail], 999999)
   check('移动到不存在的文件夹时报错', Boolean(badMove.errors.length))
+
+  /* ---------- 24b. 删除后自动跳到下一封 ---------- */
+  section('24b. 删除后自动跳到下一封')
+
+  const rows = [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }, { id: 5 }]
+
+  check(
+    '删中间一封 → 选原来位置的下一个',
+    nextAfterDelete(rows, [3], 3)?.id === 4,
+    String(nextAfterDelete(rows, [3], 3)?.id)
+  )
+  check(
+    '删最后一封 → 退回上一个',
+    nextAfterDelete(rows, [5], 5)?.id === 4,
+    String(nextAfterDelete(rows, [5], 5)?.id)
+  )
+  check(
+    '删第一封 → 选新的第一封',
+    nextAfterDelete(rows, [1], 1)?.id === 2,
+    String(nextAfterDelete(rows, [1], 1)?.id)
+  )
+  check(
+    '多选删除 → 跳到这一批之后的第一个',
+    nextAfterDelete(rows, [2, 3, 4], 4)?.id === 5,
+    String(nextAfterDelete(rows, [2, 3, 4], 4)?.id)
+  )
+  check(
+    '多选删到末尾 → 退回这一批之前',
+    nextAfterDelete(rows, [3, 4, 5], 5)?.id === 2,
+    String(nextAfterDelete(rows, [3, 4, 5], 5)?.id)
+  )
+  check(
+    '锚点为 null（没在看具体某封）→ 取列表第一封没被删的',
+    nextAfterDelete(rows, [1], null)?.id === 2,
+    String(nextAfterDelete(rows, [1], null)?.id)
+  )
+  check(
+    '锚点不在列表里（比如已被删）→ 从头找第一封没被删的',
+    nextAfterDelete(rows, [1], 999)?.id === 2,
+    String(nextAfterDelete(rows, [1], 999)?.id)
+  )
+  check('全部删光 → null', nextAfterDelete(rows, [1, 2, 3, 4, 5], 3) === null)
+  check('空列表 → null', nextAfterDelete([], [1], 1) === null)
+  check(
+    '没有删除时保持不动',
+    nextAfterDelete(rows, [], 3)?.id === 3,
+    String(nextAfterDelete(rows, [], 3)?.id)
+  )
 
   /* ---------- 25-pre. 附件标记：内嵌图片不算「有附件」 ---------- */
   //

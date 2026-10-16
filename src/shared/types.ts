@@ -382,8 +382,10 @@ export interface RulePreview {
 export type ThemeMode = 'light' | 'dark' | 'system'
 
 export interface AppSettings {
-  /** 邮件列表与预览的垂直分割比例 */
+  /** 邮件列表与正文的宽度比例（左栏占主区域的多少） */
   splitRatio: number
+  /** 最左侧文件夹栏的宽度（像素） */
+  sidebarWidth: number
   /** 每页加载数量 */
   pageSize: number
   /** 同步时每个文件夹一次抓取的头部数量 */

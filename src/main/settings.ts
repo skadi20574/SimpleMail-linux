@@ -11,6 +11,7 @@ import { appPaths } from './paths'
 
 export const DEFAULT_SETTINGS: AppSettings = {
   splitRatio: 0.42,
+  sidebarWidth: 232,
   pageSize: 200,
   syncBatch: 500,
   autoDownloadBodies: true,
