@@ -44,6 +44,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   shortcuts: {},
   autoMarkRead: true,
   autoSyncOnStart: true,
+  autoSyncEnabled: true,
+  syncIntervalMinutes: 5,
   defaultArchiveTag: 'Foxmail存档'
 }
 
@@ -177,12 +179,8 @@ export default function App(): JSX.Element {
         folds[0]
       if (firstInbox) setSelectedFolderId(firstInbox.id)
 
-      if (s.autoSyncOnStart) {
-        // 没填密码/授权码的账户跳过，避免一启动就弹一堆连接失败
-        for (const a of accs) {
-          if (!a.isLocal && a.syncEnabled && a.password) void api.sync.start(a.id)
-        }
-      }
+      // 启动时的同步改由主进程负责（见 index.ts）：
+      // 放在这里要等界面加载完，而且换窗口/重载界面就会再触发一次。
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

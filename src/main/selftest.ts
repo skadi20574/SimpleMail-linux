@@ -51,10 +51,12 @@ import {
   userDesktopPath
 } from './mailto'
 import { createAccountDraft } from '@shared/account-defaults'
+import type { Account } from '@shared/types'
 import { Pop3Client, syncPop3Account, testPop3 } from './mail/pop3'
 import { generateSelfSignedCert, startMockPop3 } from './testing/pop3-mock'
 import { deleteMailsPermanently, markMailsFlagged, markMailsRead, moveMailsToTrash } from './mail/actions'
 import { applyRulesToMail, previewRule, runAllRules } from './rules'
+import { canSync } from './sync-runner'
 import {
   createFolder,
   deleteFolder,
@@ -1926,6 +1928,52 @@ async function run(root: string): Promise<void> {
   const fixed = normalizeSettings(bad)
   check('非法主题值被纠正为跟随系统', fixed.theme === 'system', String(fixed.theme))
   check('非法快捷键值被纠正为空对象', typeof fixed.shortcuts === 'object' && !Array.isArray(fixed.shortcuts))
+
+  /* ── 自动收取的设置项健壮性 ──
+   *
+   * 老用户的 settings.json 里没有这两个字段，必须给上默认值，
+   * 否则升级后自动收取会是「undefined 分钟」这种状态。
+   */
+  const legacySettings = normalizeSettings({
+    ...DEFAULT_SETTINGS,
+    autoSyncEnabled: undefined as unknown as boolean,
+    syncIntervalMinutes: undefined as unknown as number
+  })
+  check(
+    '老设置文件缺 autoSyncEnabled 时默认开启自动收取',
+    legacySettings.autoSyncEnabled === true,
+    String(legacySettings.autoSyncEnabled)
+  )
+  check(
+    '老设置文件缺 syncIntervalMinutes 时默认 5 分钟',
+    legacySettings.syncIntervalMinutes === 5,
+    String(legacySettings.syncIntervalMinutes)
+  )
+  check(
+    '间隔下限夹到 1 分钟（写 0 或负数不会空转）',
+    normalizeSettings({ ...DEFAULT_SETTINGS, syncIntervalMinutes: 0 }).syncIntervalMinutes === 5 &&
+      normalizeSettings({ ...DEFAULT_SETTINGS, syncIntervalMinutes: -3 }).syncIntervalMinutes === 5,
+    String(normalizeSettings({ ...DEFAULT_SETTINGS, syncIntervalMinutes: 0 }).syncIntervalMinutes)
+  )
+  check(
+    '间隔上限夹到 1440 分钟（一天）',
+    normalizeSettings({ ...DEFAULT_SETTINGS, syncIntervalMinutes: 999999 }).syncIntervalMinutes === 1440,
+    String(normalizeSettings({ ...DEFAULT_SETTINGS, syncIntervalMinutes: 999999 }).syncIntervalMinutes)
+  )
+  check(
+    '正常间隔原样保留',
+    normalizeSettings({ ...DEFAULT_SETTINGS, syncIntervalMinutes: 15 }).syncIntervalMinutes === 15
+  )
+
+  // 什么账户会被定时器挑中：在线 + 开了同步 + 有密码
+  const mkAccount = (over: Partial<Account>): Account =>
+    ({ isLocal: false, syncEnabled: true, password: 'x', ...over }) as Account
+  check('只有在线 + 启用同步 + 有密码的账户会被自动收取',
+    canSync(mkAccount({})) &&
+      !canSync(mkAccount({ password: '' })) &&
+      !canSync(mkAccount({ syncEnabled: false })) &&
+      !canSync(mkAccount({ isLocal: true }))
+  )
 
   // 复位，避免影响后续断言
   saveSettings({ theme: 'system', shortcuts: {} })

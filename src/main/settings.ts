@@ -19,6 +19,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
   shortcuts: {},
   autoSyncOnStart: true,
+  autoSyncEnabled: true,
+  syncIntervalMinutes: 5,
   defaultArchiveTag: 'Foxmail存档',
   autoMarkRead: true
 }
@@ -77,5 +79,22 @@ export function normalizeSettings(s: AppSettings): AppSettings {
       ? s.shortcuts
       : {}
   const autoMarkRead = typeof s.autoMarkRead === 'boolean' ? s.autoMarkRead : true
-  return { ...s, theme, shortcuts, autoMarkRead }
+  // 老用户的 settings.json 里没有这两个字段，要给上默认值；间隔夹到合理范围，
+  // 免得手改配置文件写成 0 或负数导致定时器空转
+  const autoSyncEnabled = typeof s.autoSyncEnabled === 'boolean' ? s.autoSyncEnabled : true
+  const rawInterval = Number(s.syncIntervalMinutes)
+  const syncIntervalMinutes =
+    Number.isFinite(rawInterval) && rawInterval >= 1 ? Math.min(1440, Math.round(rawInterval)) : 5
+  return {
+    ...s,
+    theme,
+    shortcuts,
+    autoMarkRead,
+    autoSyncEnabled,
+    syncIntervalMinutes,
+    sidebarWidth:
+      Number.isFinite(Number(s.sidebarWidth)) && Number(s.sidebarWidth) >= 150
+        ? Math.min(460, Math.round(Number(s.sidebarWidth)))
+        : 232
+  }
 }

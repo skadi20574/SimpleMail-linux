@@ -105,6 +105,7 @@ interface RawApi {
     start(accountId: number): Promise<{ ok: boolean; error?: string; already?: boolean }>
     abort(accountId: number): Promise<{ ok: boolean }>
     status(): Promise<{ running: boolean; accountId: number | null; lastProgress: SyncProgress | null }>
+    autoStatus(): Promise<{ enabled: boolean; intervalMinutes: number; nextRunAt: number | null; running: boolean }>
     onProgress(cb: (p: SyncProgress) => void): () => void
     onFinished(cb: (p: { accountId: number; aborted: boolean }) => void): () => void
   }

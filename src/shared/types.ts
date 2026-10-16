@@ -404,6 +404,10 @@ export interface AppSettings {
   shortcuts: Record<string, string>
   /** 启动时是否自动同步 */
   autoSyncOnStart: boolean
+  /** 是否按下面的间隔自动收取新邮件 */
+  autoSyncEnabled: boolean
+  /** 自动收取的间隔（分钟） */
+  syncIntervalMinutes: number
   /** 从 Foxmail 导入时默认的批次标签前缀 */
   defaultArchiveTag: string
   /**

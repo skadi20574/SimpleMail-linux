@@ -15,6 +15,9 @@ import type { ThemeMode } from '@shared/types'
 
 type Tab = 'general' | 'shortcuts' | 'data' | 'about'
 
+/** 自动收取的间隔选项（分钟）。1 分钟已经很密了，再小对邮箱服务器不友好 */
+const SYNC_INTERVALS = [1, 2, 5, 10, 15, 30, 60, 120]
+
 interface Props {
   accounts: Account[]
   settings: AppSettings
@@ -68,6 +71,13 @@ export default function SettingsDialog(props: Props): JSX.Element {
   const [migrating, setMigrating] = useState(false)
   const [migrateProgress, setMigrateProgress] = useState<DataDirProgress | null>(null)
   const [migratedFrom, setMigratedFrom] = useState<string | null>(null)
+  /** 自动收取状态（下次执行时间在界面上显示给用户看） */
+  const [autoSync, setAutoSync] = useState<{
+    enabled: boolean
+    intervalMinutes: number
+    nextRunAt: number | null
+    running: boolean
+  } | null>(null)
   const [mailtoLoading, setMailtoLoading] = useState(false)
   const [mailtoSetting, setMailtoSetting] = useState(false)
   /** 清除数据的界内确认（不用 window.prompt —— Electron 根本没实现它） */
@@ -76,6 +86,14 @@ export default function SettingsDialog(props: Props): JSX.Element {
 
   const shortcuts = useMemo(() => resolveShortcuts(s), [s])
   const conflicts = useMemo(() => findShortcutConflicts(shortcuts), [shortcuts])
+
+  /* 「下次收取」时间要跟着走，否则用户看一眼就以为是死的 */
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      void api.sync.autoStatus().then(setAutoSync)
+    }, 30_000)
+    return () => window.clearInterval(t)
+  }, [])
 
   /* 迁移进度（复制 GB 级数据时界面要有反馈） */
   useEffect(() => api.app.onDataDirProgress(setMigrateProgress), [])
@@ -102,13 +120,14 @@ export default function SettingsDialog(props: Props): JSX.Element {
 
   useEffect(() => {
     void (async () => {
-      const [st, p, ar, info, mt, dd] = await Promise.all([
+      const [st, p, ar, info, mt, dd, as] = await Promise.all([
         api.app.stats(),
         api.app.paths(),
         api.archives.list(),
         api.app.installInfo(),
         api.app.mailtoStatus(),
-        api.app.dataDir()
+        api.app.dataDir(),
+        api.sync.autoStatus()
       ])
       setStats(st)
       setPaths(p)
@@ -116,6 +135,7 @@ export default function SettingsDialog(props: Props): JSX.Element {
       setInstall(info)
       setMailto(mt)
       setDataDir(dd)
+      setAutoSync(as)
     })()
   }, [])
 
@@ -220,6 +240,57 @@ export default function SettingsDialog(props: Props): JSX.Element {
                   />
                   启动后自动同步所有账户
                 </label>
+              </div>
+
+              <div className="field">
+                <label style={{ display: 'inline-flex', gap: 7, alignItems: 'center' }}>
+                  <input
+                    type="checkbox"
+                    checked={s.autoSyncEnabled}
+                    onChange={(e) => void patch({ autoSyncEnabled: e.target.checked })}
+                  />
+                  自动收取新邮件
+                </label>
+                <div className="hint" style={{ marginLeft: 22 }}>
+                  开着的时候程序会按下面的间隔在后台自动收信，不用手动点同步。
+                  只对「启用了同步」并且填了密码/授权码的账户生效。
+                </div>
+                {s.autoSyncEnabled && (
+                  <div
+                    style={{
+                      marginLeft: 22,
+                      marginTop: 8,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      // 窄一点的窗口里这一行会挤，允许整体换行，
+                      // 但每个元素自己不折行 —— 否则「收取间隔」会被拆成两行
+                      flexWrap: 'wrap'
+                    }}
+                  >
+                    <span style={{ whiteSpace: 'nowrap' }}>收取间隔</span>
+                    <select
+                      value={String(s.syncIntervalMinutes)}
+                      onChange={(e) => void patch({ syncIntervalMinutes: Number(e.target.value) })}
+                      style={{ height: 28, minWidth: 120, flex: '0 0 auto' }}
+                    >
+                      {SYNC_INTERVALS.map((m) => (
+                        <option key={m} value={String(m)}>
+                          {m < 60 ? `${m} 分钟` : `${m / 60} 小时`}
+                        </option>
+                      ))}
+                    </select>
+                    {autoSync && autoSync.nextRunAt && (
+                      <span className="hint" style={{ margin: 0, whiteSpace: 'nowrap' }}>
+                        下次收取：{new Date(autoSync.nextRunAt).toLocaleTimeString('zh-CN', {
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })}
+                        {autoSync.running ? '（正在收取…）' : ''}
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="field">

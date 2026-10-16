@@ -69,6 +69,8 @@ const api = {
     start: (accountId: number) => invoke('sync:start', accountId),
     abort: (accountId: number) => invoke('sync:abort', accountId),
     status: () => invoke('sync:status'),
+    /** 自动收取的状态（开关、间隔、下次执行时间） */
+    autoStatus: () => invoke('sync:autoStatus'),
     onProgress: (cb: (p: SyncProgress) => void) => on('sync:progress', cb),
     onFinished: (cb: (p: { accountId: number; aborted: boolean }) => void) => on('sync:finished', cb)
   },

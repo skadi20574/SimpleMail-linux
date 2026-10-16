@@ -38,6 +38,8 @@ import { ensureLocalArchiveAccount } from './foxmail/importer'
 import { createMainWindow, getAllWindows, getMainWindow } from './windows'
 import { parseMailtoFromArgv, type MailtoRequest } from '@shared/mailto'
 import { enqueueMailto } from './mailto-queue'
+import { syncAllAccounts } from './sync-runner'
+import { rescheduleAutoSync, stopAutoSync } from './sync-scheduler'
 import { isExistingFile, resolveMailtoAttachments } from './mailto'
 
 /**
@@ -261,6 +263,13 @@ if (!hasSingleInstanceLock) {
       const initial = parseMailtoFromArgv(process.argv, isAttachmentCandidate)
       if (initial) dispatchMailto(initial)
     }
+    // 启动时同步一次（可选），并起自动收取的定时器。
+    // 放在主进程而不是界面里：不依赖界面加载完成，也不会因为重载界面重复触发。
+    if (loadSettings().autoSyncOnStart) {
+      syncAllAccounts('启动时')
+    }
+    rescheduleAutoSync()
+
     app.on('activate', () => {
       if (getAllWindows().length === 0) createMainWindow()
     })
@@ -323,5 +332,6 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  stopAutoSync()
   closeDb()
 })

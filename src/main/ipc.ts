@@ -35,7 +35,9 @@ import {
   ingestSource
 } from './mail/imap'
 import { syncPop3Account, testPop3 } from './mail/pop3'
-import { abortSync, isAborted, runningAccountIds } from './mail/sync-control'
+import { abortSync, runningAccountIds } from './mail/sync-control'
+import { isAnySyncRunning, lastSyncProgress, startSync } from './sync-runner'
+import { autoSyncStatus, noteManualSync, rescheduleAutoSync } from './sync-scheduler'
 import { applyRulesToMail, previewRule, runAllRules } from './rules'
 import {
   createFolder,
@@ -96,44 +98,13 @@ async function handleAccountTest(
 
 /* ─────────────────────────── 同步 ─────────────────────────── */
 
-let syncRunning = new Map<number, Promise<void>>()
-let lastProgress: SyncProgress | null = null
-
 async function handleSyncStart(_e: Sender, accountId: number): Promise<unknown> {
   const account = repo.getAccount(accountId)
   if (!account) return { ok: false, error: '账户不存在' }
   if (account.isLocal) return { ok: false, error: '本地存档账户无需同步' }
-  if (syncRunning.has(accountId)) return { ok: true, already: true }
-
-  const settings = loadSettings()
-  const onProgress = (p: SyncProgress): void => {
-    lastProgress = p
-    broadcast('sync:progress', p)
-  }
-
-  const task = (
-    account.protocol === 'pop3'
-      ? syncPop3Account(account, {
-          // POP3 是「下载即完整」的模式，单次上限沿用同步批量设置，
-          // 剩余部分下次同步继续拉，进度条不会长时间不动
-          maxMessages: Math.max(settings.syncBatch, 200),
-          onProgress
-        })
-      : syncAccount(account, {
-          headerBatch: settings.syncBatch,
-          bodyBatch: 200,
-          onProgress
-        })
-  )
-    .catch(() => {
-      /* 错误已经通过 progress 事件上报 */
-    })
-    .finally(() => {
-      syncRunning.delete(accountId)
-      broadcast('sync:finished', { accountId, aborted: isAborted(accountId) })
-    })
-
-  syncRunning.set(accountId, task)
+  if (!startSync(account)) return { ok: true, already: true }
+  // 手动点过同步之后把自动收取重新计时，免得刚点完马上又自动收一次
+  noteManualSync()
   return { ok: true }
 }
 
@@ -663,12 +634,13 @@ export function registerIpc(): void {
     abortSync(accountId)
     return { ok: true }
   })
+  ipcMain.handle('sync:autoStatus', () => autoSyncStatus())
   ipcMain.handle('sync:status', () => {
     const running = runningAccountIds()
     return {
-      running: syncRunning.size > 0,
+      running: isAnySyncRunning(),
       accountId: running.length ? running[0] : null,
-      lastProgress
+      lastProgress: lastSyncProgress()
     }
   })
 
@@ -706,7 +678,14 @@ export function registerIpc(): void {
   })
 
   ipcMain.handle('settings:get', () => loadSettings())
-  ipcMain.handle('settings:set', (_e, patch: Partial<AppSettings>) => saveSettings(patch))
+  ipcMain.handle('settings:set', (_e, patch: Partial<AppSettings>) => {
+    const next = saveSettings(patch)
+    // 自动收取的开关/间隔改了要立刻生效，不用等下一次定时
+    if ('autoSyncEnabled' in patch || 'syncIntervalMinutes' in patch) {
+      rescheduleAutoSync()
+    }
+    return next
+  })
 
   /**
    * 判断当前是怎么装上的 —— 决定「卸载」按钮该做什么。
