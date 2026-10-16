@@ -55,6 +55,20 @@ function isAttachmentCandidate(path: string): boolean {
 import { diag, installDiagnostics, logStartup } from './diagnostics'
 import { applyDataDir } from './data-dir'
 
+/**
+ * ⚠️ 必须在**任何** `app.getPath(...)` 之前调用。
+ *
+ * Electron 的 userData 路径 = `appData/<app.getName()>`，而 getName() 在没
+ * 显式设置时取 package.json 的 name —— 我们的是 `simplemail`（小写）。
+ *
+ * 踩过的坑：1.1.7 加启动诊断时，把一个 `app.getPath('userData')` 的调用
+ * 提到了模块加载期（诊断日志要写进数据目录），而 setName 当时还留在文件末尾，
+ * 结果路径从 `~/.config/SimpleMail` 变成了 `~/.config/simplemail`，
+ * **老用户（1.1.6 及更早）的邮件在新版本里就"不见了"**。
+ * 所以这行必须钉在最前面。
+ */
+app.setName('SimpleMail')
+
 // 自定义协议：邮件正文里的 cid: 内联图片通过它读取磁盘上的附件文件。
 // 必须在 app ready 之前完成注册。
 protocol.registerSchemesAsPrivileged([
@@ -171,8 +185,15 @@ logStartup({
   singleInstanceLock: hasSingleInstanceLock,
   dataDir: dataDirState.dataDir,
   dataDirCustom: dataDirState.custom,
-  ...(dataDirState.pointerBroken ? { dataDirPointerBroken: dataDirState.pointerBroken } : {})
+  ...(dataDirState.pointerBroken ? { dataDirPointerBroken: dataDirState.pointerBroken } : {}),
+  ...(dataDirState.recoveredFrom ? { recoveredFrom: dataDirState.recoveredFrom } : {})
 })
+if (dataDirState.recoveredFrom) {
+  diag(
+    `[数据目录] 规范目录里没有数据，已改用在 1.1.7–1.2.0 期间使用的小写目录：` +
+      `${dataDirState.recoveredFrom}`
+  )
+}
 
 if (!hasSingleInstanceLock) {
   // ⚠️ 这条分支里**不要**做任何初始化（数据库、IPC、窗口）——
@@ -304,6 +325,3 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   closeDb()
 })
-
-// 让「关于」里显示得清楚一点
-app.setName('SimpleMail')

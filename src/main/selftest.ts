@@ -20,7 +20,7 @@ import {
   statSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { deflateSync } from 'node:zlib'
 import iconv from 'iconv-lite'
 
@@ -28,6 +28,7 @@ import { closeDb } from './db'
 import { openDatabase } from './db/sqlite'
 import { initSchema, migrate, SCHEMA_VERSION } from './db/schema'
 import { hasVisibleAttachments } from './mail/parser'
+import { checkDataDirTarget, legacyDataDir } from './data-dir'
 import * as repo from './db/repo'
 import { collectUnit, inMemoryLimit, iterateUnit, openArchive, inspectArchive } from './foxmail/archive'
 import { importArchive, ensureLocalArchiveAccount } from './foxmail/importer'
@@ -2657,6 +2658,45 @@ async function run(root: string): Promise<void> {
       const p = userDesktopPath()
       if (prev !== undefined) process.env.XDG_DATA_HOME = prev
       return /\/\.local\/share\/applications\/simplemail\.desktop$/.test(p)
+    })()
+  )
+
+  /* ── 数据目录命名（防止 1.1.7 那个「升级后邮件不见了」的回归重演）──
+   *
+   * 事故经过：1.1.7 为了写诊断日志，把一个 app.getPath('userData') 的调用
+   * 提到了模块加载期，而 app.setName('SimpleMail') 还在文件末尾，
+   * 于是 userData 按 package.json 的 name（小写 simplemail）算，
+   * 从 `~/.config/SimpleMail` 变成了 `~/.config/simplemail` ——
+   * 1.1.6 及更早的用户升级后邮件就"不见了"。
+   *
+   * 断言在**真实启动环境**里检查默认目录名，这样只要有人再把 getPath
+   * 提到 setName 之前，自检立刻失败。
+   */
+  // 注意：这里**不能**断言 defaultDataDir() 的结尾是 SimpleMail ——
+  // 自检自己会把 userData 指到临时目录，那样断言恒假。
+  // 「打包产物真的用了大写目录」由 scripts/verify-package.sh 起真程序验证。
+  check(
+    '兼容目录的名字确实是小写 simplemail（1.1.7–1.2.0 用过的那个）',
+    basename(legacyDataDir()) === 'simplemail',
+    legacyDataDir()
+  )
+
+  /* 目标目录校验：这几点拦不住的话，用户能把数据搬进自己里面去 */
+  check(
+    '数据目录校验：拒绝当前正在使用的目录',
+    checkDataDirTarget(app.getPath('userData')).ok === false
+  )
+  check(
+    '数据目录校验：拒绝当前数据目录的子目录',
+    checkDataDirTarget(join(app.getPath('userData'), 'sub')).ok === false
+  )
+  check('数据目录校验：拒绝根目录', checkDataDirTarget('/').ok === false)
+  check(
+    '数据目录校验：接受一个正常的独立目录',
+    (() => {
+      const target = join(root, 'datadir-target-ok')
+      const r = checkDataDirTarget(target)
+      return r.ok === true
     })()
   )
 

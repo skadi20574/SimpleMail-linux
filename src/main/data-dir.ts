@@ -18,6 +18,7 @@
  */
 
 import { app } from 'electron'
+import { DatabaseSync } from 'node:sqlite'
 import {
   cpSync,
   existsSync,
@@ -46,30 +47,88 @@ export function defaultDataDir(): string {
   return defaultDir
 }
 
-function pointerPath(): string {
-  return join(defaultDataDir(), POINTER_NAME)
+function pointerPathIn(base: string): string {
+  return join(base, POINTER_NAME)
 }
 
-/** 读取指针文件；没有、损坏、或目录已不存在都返回 null（退化为默认目录） */
-export function readDataDirPointer(): string | null {
+/**
+ * 1.1.7 – 1.2.0 用过的目录（小写 simplemail）。
+ *
+ * 那三个版本因为 `app.setName` 的调用时机错了（在模块加载期取 userData
+ * 时还没执行），路径按 package.json 的 `simplemail` 算，于是从 1.1.7 起
+ * 数据目录从 `~/.config/SimpleMail` 变成了 `~/.config/simplemail` ——
+ * 1.1.6 及更早的用户升级后邮件就"不见了"。
+ * 现在路径已改回规范的 `SimpleMail`，但**必须**回头认一下这个旧目录，
+ * 否则那段时间里新收的邮件又会丢。
+ */
+export function legacyDataDir(): string {
+  return join(app.getPath('appData'), 'simplemail')
+}
+
+function dbSizeOf(dir: string): number {
   try {
-    const file = pointerPath()
+    return statSync(join(dir, 'simplemail.db')).size
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * 目录里到底有多少封邮件。
+ *
+ * ⚠️ 一开始这里用「数据库文件大小」判断有没有数据，阈值取 512KB —— 结果
+ * 小邮箱（几百封、库才两百多 KB）会被误判成"空的"，认不回旧目录。
+ * 直接数邮件才准确。
+ */
+function mailCountOf(dir: string): number {
+  const file = join(dir, 'simplemail.db')
+  if (!existsSync(file)) return 0
+  let db: DatabaseSync | null = null
+  try {
+    db = new DatabaseSync(file, { readOnly: true })
+    const row = db.prepare('SELECT COUNT(*) AS c FROM mails').get() as { c?: number } | undefined
+    return Number(row?.c ?? 0)
+  } catch {
+    // 打不开（损坏、或不是我们的库）就当作没有数据
+    return 0
+  } finally {
+    try {
+      db?.close()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** 读取某个目录下的指针文件；没有、损坏都返回 null */
+function readPointerIn(base: string): string | null {
+  try {
+    const file = pointerPathIn(base)
     if (!existsSync(file)) return null
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as { dataDir?: unknown }
     const dir = typeof parsed.dataDir === 'string' ? parsed.dataDir.trim() : ''
-    if (!dir) return null
-    return resolve(dir)
+    return dir ? resolve(dir) : null
   } catch {
     return null
   }
 }
 
+/** 读取指针文件；两个目录都找一遍（老版本可能把指针写在了小写目录里） */
+export function readDataDirPointer(): string | null {
+  return readPointerIn(defaultDataDir()) ?? readPointerIn(legacyDataDir())
+}
+
 export function writeDataDirPointer(dir: string | null): void {
-  const file = pointerPath()
+  const file = pointerPathIn(defaultDataDir())
   if (!dir) {
-    // 恢复默认：删掉指针文件即可
     try {
       rmSync(file, { force: true })
+    } catch {
+      /* ignore */
+    }
+    // 老目录里可能还留着一份，一并清掉，避免以后又被读到
+    try {
+      rmSync(pointerPathIn(legacyDataDir()), { force: true })
     } catch {
       /* ignore */
     }
@@ -83,26 +142,47 @@ export function writeDataDirPointer(dir: string | null): void {
  * 按指针文件把 userData 切到自定义目录。
  * 必须在打开数据库、创建窗口之前调用（在 index.ts 的最前面）。
  */
-export function applyDataDir(): { dataDir: string; custom: boolean; pointerBroken?: string } {
-  const fallback = defaultDataDir()
+export function applyDataDir(): {
+  dataDir: string
+  custom: boolean
+  pointerBroken?: string
+  /** 从 1.1.7–1.2.0 的小写目录里认回了数据 */
+  recoveredFrom?: string
+} {
+  const canonical = defaultDataDir()
+  const legacy = legacyDataDir()
   const target = readDataDirPointer()
 
-  if (!target) return { dataDir: fallback, custom: false }
-
-  if (!existsSync(target)) {
-    // 目标盘没挂载 / 目录被删了。**不能用它**（否则数据库会在一个错误的位置
-    // 被重新创建，用户以为邮件丢了）。退回默认目录，并把这件事记下来，
-    // 界面和日志里都要能看到。
-    return { dataDir: fallback, custom: false, pointerBroken: target }
+  if (target) {
+    if (!existsSync(target)) {
+      // 目标盘没挂载 / 目录被删了。**不能用它**（否则数据库会在一个错误的位置
+      // 被重新创建，用户以为邮件丢了）。退回规范目录，并把这件事记下来。
+      return { dataDir: canonical, custom: false, pointerBroken: target }
+    }
+    try {
+      mkdirSync(target, { recursive: true })
+      app.setPath('userData', target)
+      return { dataDir: target, custom: true }
+    } catch {
+      return { dataDir: canonical, custom: false, pointerBroken: target }
+    }
   }
 
-  try {
-    mkdirSync(target, { recursive: true })
-    app.setPath('userData', target)
-    return { dataDir: target, custom: true }
-  } catch {
-    return { dataDir: fallback, custom: false, pointerBroken: target }
+  // 没有指针文件：在「规范目录」和「1.1.7–1.2.0 的小写目录」之间挑真正有邮件的那个。
+  // 两个都有邮件时取邮件多的那个（覆盖「先用 1.1.4 又用 1.1.8、两边都有数据」的情况）。
+  const canonicalMails = mailCountOf(canonical)
+  const legacyMails = mailCountOf(legacy)
+
+  if (legacyMails > canonicalMails) {
+    try {
+      app.setPath('userData', legacy)
+      return { dataDir: legacy, custom: false, recoveredFrom: legacy }
+    } catch {
+      /* 认不回来就用规范目录 */
+    }
   }
+
+  return { dataDir: canonical, custom: false }
 }
 
 /* ─────────────────────────── 迁移 ─────────────────────────── */
@@ -282,7 +362,7 @@ export function dataDirInfo(): DataDirInfo {
     dataDir: current,
     defaultDataDir: def,
     custom: resolve(current) !== resolve(def),
-    pointerFile: pointerPath(),
+    pointerFile: pointerPathIn(def),
     dbBytes: (() => {
       try {
         return statSync(join(current, 'simplemail.db')).size

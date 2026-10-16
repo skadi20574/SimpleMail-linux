@@ -316,6 +316,38 @@ else
   note "（没找到 $APP_RES，跳过 extraResources 检查）"
 fi
 
+# ── 7. 数据目录名（防止「升级后邮件不见了」的回归）──────────────
+#
+# 事故经过：1.1.7 为了写启动诊断，把一个 app.getPath('userData') 的调用
+# 提到了模块加载期，而 app.setName('SimpleMail') 还在文件末尾 —— 于是
+# userData 按 package.json 的 name 算，从 ~/.config/SimpleMail 变成了
+# ~/.config/simplemail，1.1.6 及更早的用户升级后邮件就"不见了"。
+#
+# 这条断言**真的把打包好的程序跑一遍**（用隔离的 HOME），看它建的是哪个目录。
+# 静态看代码顺序不可靠：那个 getPath 可能在函数体里，出现位置说明不了执行时机。
+echo "7. 数据目录名"
+# 脚本开头已经 cd 到项目根，这里用相对路径（$ROOT 在本脚本里并不存在）
+APP_BIN="release/linux-unpacked/simplemail"
+if [ -x "$APP_BIN" ]; then
+  PROBE_HOME="$WORK/probe-home"
+  mkdir -p "$PROBE_HOME"
+  # 跑一小会儿就退出（SIMPLEMAIL_SHOT 到点会自己结束）
+  HOME="$PROBE_HOME" XDG_CONFIG_HOME="$PROBE_HOME/.config" \
+    SIMPLEMAIL_SHOT="$WORK/probe.png" SIMPLEMAIL_SHOT_DELAY=2500 \
+    timeout 25 "$APP_BIN" --no-sandbox >/dev/null 2>&1 || true
+
+  MADE="$(ls "$PROBE_HOME/.config" 2>/dev/null | grep -i simplemail || true)"
+  if [ "$MADE" = "SimpleMail" ]; then
+    ok "全新启动创建的是 $MADE（与 1.1.6 及更早一致）"
+  elif [ -n "$MADE" ]; then
+    bad "全新启动创建的是「$MADE」—— 应为 SimpleMail，否则老用户的数据目录会对不上"
+  else
+    note "（程序没能在隔离 HOME 里启动，跳过这一项）"
+  fi
+else
+  note "（没找到 $APP_BIN，跳过数据目录检查）"
+fi
+
 # ── 结果 ────────────────────────────────────────────────────────
 echo
 if [ "$FAILED" -eq 0 ]; then
