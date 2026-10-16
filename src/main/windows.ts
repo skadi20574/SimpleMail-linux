@@ -223,6 +223,15 @@ function attachScreenshotHook(win: BrowserWindow): void {
                       listLeftOfPreview: l.right ?? (l.x + l.w) <= p.x + 8
                     }
                   })(),
+                  // 行首三格：[已读状态] [星标] [附件]；确认复选框已经没有了
+                  rowLead: [...document.querySelectorAll('.mailrow')].slice(0, 8).map(r => ({
+                    state: r.querySelector('.slot-state .unread-dot') ? '未读'
+                         : r.querySelector('.slot-state .read-check') ? '已读' : '无',
+                    star: Boolean(r.querySelector('.slot-star svg')),
+                    attach: Boolean(r.querySelector('.slot-attach svg')),
+                    hasCheckbox: Boolean(r.querySelector('input.rowcheck')),
+                    subject: (r.querySelector('.subject')?.textContent || '').trim().slice(0, 14)
+                  })),
                   // 当前预览的邮件主题 + 列表前几行的主题：
                   // 用来验证「删除后自动跳到下一封」到底跳对了没有
                   previewSubject: (document.querySelector('.preview-subject')?.textContent || '').trim(),

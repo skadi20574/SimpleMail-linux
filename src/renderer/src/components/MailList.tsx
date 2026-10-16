@@ -28,7 +28,6 @@ interface Props {
   /** 开始拖拽整行（把它拖到左侧文件夹上即可移动） */
   onRowDragStart: (mail: MailSummary) => void
   /** 点击行首复选框：单独切换一封 */
-  onToggle: (mail: MailSummary) => void
   /** 表头复选框：全选 / 取消全选 */
   onSelectAll: (select: boolean) => void
   onLoadMore: () => void
@@ -147,11 +146,15 @@ export default function MailList(props: Props): JSX.Element {
             >
               <span className="rowlead">
                 {/*
-                  三个格子各自独立，互不顶替：
-                    [未读蓝点] [星标] [复选框]
-                  之前蓝点和星标共用一个格子、并且「有星标就不显示蓝点」，
-                  导致未读的星标邮件看起来和已读的一样，分不出状态。
-                  三格都固定占位，鼠标划过出现复选框时文字也不会左右跳。
+                  行首三格：[已读状态] [星标] [附件]
+                  三格各自固定占位、互不顶替 —— 之前蓝点和星标共用一个格子，
+                  有星标就不显示蓝点，未读的星标邮件看起来和已读的一样。
+
+                  为什么第三格不再是复选框：选中状态本来就有整行高亮，
+                  再放个勾选框是重复的。改成附件标记后，这一格才真正有用
+                  —— 有附件才有曲别针，没有就是空的。
+                  多选仍然可用：Ctrl/Cmd 单击逐封加选，Shift 单击选一段，
+                  表头那个勾选框仍然是全选。
                 */}
                 {/*
                   未读 = 绿色圆点，已读 = 小对勾。
@@ -168,24 +171,14 @@ export default function MailList(props: Props): JSX.Element {
                 <span className="slot slot-star" title={m.flagged ? '已加星标' : ''}>
                   {m.flagged ? <Icon name="star" size={11} className="star-on" /> : null}
                 </span>
-                <input
-                  type="checkbox"
-                  className="rowcheck"
-                  checked={selected}
-                  onClick={(e) => e.stopPropagation()}
-                  onChange={() => props.onToggle(m)}
-                  title="选中这封（配合 Ctrl / Shift 可多选）"
-                />
+                <span className="slot slot-attach" title={m.hasAttachments ? '含附件' : ''}>
+                  {m.hasAttachments ? <Icon name="paperclip" size={11} /> : null}
+                </span>
               </span>
               <span className="from" title={m.fromAddr}>
                 <Hl text={m.fromName || m.fromAddr || '(无发件人)'} terms={props.searchTerms} />
               </span>
               <span className="subject" title={m.subject}>
-                {m.hasAttachments && (
-                  <span className="clip" title="含附件">
-                    <Icon name="paperclip" size={11} />{' '}
-                  </span>
-                )}
                 <Hl text={m.subject || '(无主题)'} terms={props.searchTerms} />
                 {props.showAccount && m.folderName && <span className="tag">{m.folderName}</span>}
               </span>

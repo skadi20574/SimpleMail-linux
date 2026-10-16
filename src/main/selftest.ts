@@ -54,7 +54,7 @@ import { createAccountDraft } from '@shared/account-defaults'
 import { Pop3Client, syncPop3Account, testPop3 } from './mail/pop3'
 import { generateSelfSignedCert, startMockPop3 } from './testing/pop3-mock'
 import { deleteMailsPermanently, markMailsFlagged, markMailsRead, moveMailsToTrash } from './mail/actions'
-import { applyRulesToMail, previewRule } from './rules'
+import { applyRulesToMail, previewRule, runAllRules } from './rules'
 import {
   createFolder,
   deleteFolder,
@@ -1682,6 +1682,60 @@ async function run(root: string): Promise<void> {
   void badRegex
   void moveRule
 
+  /* ---------- 18.9 手动运行规则必须扫全量，而不是只扫没评估过的 ---------- */
+  //
+  // 这个 bug 的表现：「试运行能匹配到一些，实际运行说什么都没匹配」。
+  // 根因是两条路用了不同的查询 ——
+  //   试运行 previewRule → listMailsForRuleScan（全量）
+  //   实际运行 runAllRules → listMailsPendingRules（只取 rules_done = 0）
+  // 而 rules_done 的含义是「当前规则集已经评估过这封」，用户新建规则时
+  // 老邮件早就是 1 了，于是永远扫 0 封。
+
+  // 专门造一封"待屏蔽"的邮件，先让它被评估过（rules_done = 1）
+  const banishId = addRuleMail(9, 'spammer@example.com', '屏蔽回归专用词XYZ 出现了', '内容')
+  applyRulesToMail(banishId) // 此时还没有匹配它的规则 → 评估完就标记 done
+  const banishBefore = repo.getMail(banishId)?.folderId
+
+  // 再把其余邮件也标记成"已评估"，模拟用了一段时间的老库
+  for (const m of repo.listMailsForRuleScan(ruleAccount.id, 500)) {
+    repo.setMailRulesDone(m.id, true)
+  }
+  const pendingNow = repo.listMailsPendingRules(ruleAccount.id).length
+  check('前提：已经没有任何「待评估」的邮件', pendingNow === 0, String(pendingNow))
+
+  // 用户新建一条屏蔽规则 —— 要屏蔽的正是那封早已评估过的邮件
+  repo.saveRule({
+    name: '屏蔽·回归测试',
+    enabled: true,
+    priority: 5,
+    accountId: ruleAccount.id,
+    matchMode: 'all',
+    conditions: [{ field: 'subject', op: 'contains', value: '屏蔽回归专用词XYZ' }],
+    action: 'trash',
+    actionFolderId: null,
+    stop: true
+  })
+
+  const run = runAllRules(ruleAccount.id)
+  // ⚠️ 关键断言：旧实现只扫 rules_done = 0，此时必然是 0 封 → 这里会失败。
+  // 这条断言写成 scanned > 0 就够，因为此刻确实没有任何待评估的邮件。
+  check('手动运行会扫描全部邮件（旧实现会扫 0 封）', run.scanned > 0, `scanned=${run.scanned}`)
+  check(
+    '新建的规则命中并处理了「早已评估过」的邮件',
+    repo.getMail(banishId)?.folderId !== banishBefore,
+    `folderBefore=${banishBefore} folderAfter=${repo.getMail(banishId)?.folderId}`
+  )
+
+  // 再跑一遍：rules_fired 应当挡住重复执行
+  const again = runAllRules(ruleAccount.id)
+  check('重复运行不会重复执行已动过手的规则', again.acted === 0, `第二次 acted=${again.acted}`)
+
+  // scope='pending' 仍然保留给「同步后的增量评估」
+  check(
+    "scope='pending' 仍然只扫没评估过的",
+    runAllRules(ruleAccount.id, { scope: 'pending' }).scanned === 0
+  )
+
   /* ---------- 19. v2 → v3 迁移（全文索引重建 + 规则表） ---------- */
   section('19. 从 v2 数据库升级（单列 cjk 索引的老库）')
 
@@ -1926,6 +1980,9 @@ async function run(root: string): Promise<void> {
 
     check('行首状态格子有样式', ruleOf('.rowlead .slot-state') !== null)
     check('行首星标格子有样式', ruleOf('.rowlead .slot-star') !== null)
+    // 行首第三格从「选中复选框」改成了「附件标记」
+    check('行首附件格子有样式', ruleOf('.rowlead .slot-attach') !== null)
+    check('行首状态格子有样式', ruleOf('.rowlead .slot-state') !== null)
 
     // 已读的「小对勾」也要有样式，否则已读邮件在列表里没有任何标记
     const readCheckRule = ruleOf('.read-check')

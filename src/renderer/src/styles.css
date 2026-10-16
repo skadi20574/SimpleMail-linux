@@ -687,12 +687,14 @@ select {
 }
 
 /*
- * 行首三格：[未读蓝点] [星标] [复选框]
+ * 行首三格：[已读状态] [星标] [附件]
  *
  * 三格各自固定占位、互不顶替。之前的问题：
  *   · 蓝点样式挂在已经改名的 .flags 上，所以圆点根本没渲染出来（看不见）；
  *   · 蓝点和星标共用一个格子，有星标就不显示蓝点，未读的星标邮件看起来和已读一样。
- * 现在蓝点、星标可以同时出现；复选框未悬停时隐藏但保留占位，文字不会左右跳。
+ *
+ * 第三格原来是选中复选框 —— 选中本来就有整行高亮，那个勾选框是重复的，
+ * 已换成附件标记（有附件才有曲别针）。多选改用 Ctrl/Shift 单击。
  */
 .rowlead {
   position: relative;
@@ -740,15 +742,10 @@ select {
   color: var(--star);
 }
 
-.rowlead .rowcheck {
-  visibility: hidden;
-  flex: 0 0 auto;
-}
-
-.mailrow:hover .rowlead .rowcheck,
-.mailrow.selected .rowlead .rowcheck,
-.mailrow.active .rowlead .rowcheck {
-  visibility: visible;
+/* 附件标记（行首第三格）：有附件才有内容，没有就是空占位 */
+.rowlead .slot-attach {
+  width: 12px;
+  color: var(--muted);
 }
 
 /* 快捷键展示 */
@@ -851,10 +848,6 @@ input.rowcheck {
   height: 7px;
   border-radius: 50%;
   background: var(--accent);
-}
-
-.mailrow .flags .clip {
-  color: var(--muted);
 }
 
 .splitter {

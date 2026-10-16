@@ -1416,7 +1416,6 @@ export default function App(): JSX.Element {
                       ? [...selectedIds]
                       : [m.id]
                   }}
-                  onToggle={(m) => selectToggle(m.id)}
                   onSelectAll={selectAll}
                   onLoadMore={() => {
                     if (mails.length < total && !listLoading) {

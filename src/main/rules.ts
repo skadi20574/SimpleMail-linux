@@ -349,8 +349,33 @@ export function previewRule(draft: RuleDraft, limit = 200): RulePreview {
 }
 
 /** 对现有邮件批量重跑规则（用户手动触发） */
-export function runAllRules(accountId?: number): { scanned: number; acted: number } {
-  const ids = repo.listMailsPendingRules(accountId, 20000)
+/**
+ * 对现有邮件整体跑一遍规则。
+ *
+ * ⚠️ scope='all'（默认，界面上的「立即运行」）扫**全部**邮件，不是只扫没评估过的。
+ *
+ * 踩过的坑：以前这里写死 `listMailsPendingRules`（只取 rules_done = 0）。
+ * 但 rules_done 的含义是「当前规则集已经评估过这封」—— 用户新建一条规则时，
+ * 所有老邮件的 rules_done 早就是 1 了，于是实际运行永远扫 0 封、报「没有匹配」；
+ * 而试运行走的是另一个查询（扫全量），所以能匹配到一堆。两边口径不一致，
+ * 表现得就像"试运行是假的"。
+ *
+ * 全量扫是安全的：`applyRulesToMail` 内部用 mails.rules_fired 记着
+ * 哪些规则已经动过手，不会重复执行（否则"移到垃圾箱"会对垃圾箱里的邮件
+ * 再来一次，等同于永久删除）。
+ *
+ * @param scope 'pending' 仅用于同步后的增量评估：只碰还没评估过的邮件。
+ */
+export function runAllRules(
+  accountId?: number,
+  options: { scope?: 'all' | 'pending' } = {}
+): { scanned: number; acted: number } {
+  const scope = options.scope ?? 'all'
+  const ids =
+    scope === 'pending'
+      ? repo.listMailsPendingRules(accountId, 20000)
+      : repo.listAllMailIdsForRules(accountId, 20000)
+
   let acted = 0
   for (const id of ids) {
     // 邮件可能已经被前面的规则删掉了

@@ -1154,6 +1154,29 @@ export function setMailRulesFired(mailId: number, ruleIds: number[]): void {
 }
 
 /** 列出所有还没跑过规则的邮件 id（按账户可过滤） */
+/**
+ * 「手动运行规则」要遍历的邮件 id：**全部**邮件，而不只是没评估过的。
+ *
+ * 为什么必须全量：rules_done 的语义是「当前规则集已经评估过这封」。
+ * 用户新建/修改一条规则之后再点「立即运行」，如果只挑 rules_done = 0 的，
+ * 结果永远是 0 封 —— 实测就是这样：试运行能匹配到一堆（它扫全量），
+ * 实际运行却报「没有匹配」。
+ *
+ * 重复执行由 mails.rules_fired 兜底（记着哪些规则已经对这封邮件动过手），
+ * 所以全量扫是安全的，不会把「移到垃圾箱」这类动作做第二遍。
+ * 只取 id，不取正文，避免把大字段读进来。
+ */
+export function listAllMailIdsForRules(accountId?: number, limit = 20000): number[] {
+  const db = getDb()
+  const sql = accountId
+    ? `SELECT id FROM mails WHERE account_id = ? ORDER BY id ASC LIMIT ?`
+    : `SELECT id FROM mails ORDER BY id ASC LIMIT ?`
+  const rows = accountId
+    ? db.prepare(sql).all(accountId, limit)
+    : db.prepare(sql).all(limit)
+  return plainAll<{ id: number }>(rows).map((r) => r.id)
+}
+
 export function listMailsPendingRules(accountId?: number, limit = 5000): number[] {
   const db = getDb()
   const sql = accountId
