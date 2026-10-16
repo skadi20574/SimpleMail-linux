@@ -26,7 +26,8 @@ import iconv from 'iconv-lite'
 
 import { closeDb } from './db'
 import { openDatabase } from './db/sqlite'
-import { initSchema, migrate } from './db/schema'
+import { initSchema, migrate, SCHEMA_VERSION } from './db/schema'
+import { hasVisibleAttachments } from './mail/parser'
 import * as repo from './db/repo'
 import { collectUnit, inMemoryLimit, iterateUnit, openArchive, inspectArchive } from './foxmail/archive'
 import { importArchive, ensureLocalArchiveAccount } from './foxmail/importer'
@@ -971,7 +972,8 @@ async function run(root: string): Promise<void> {
   check('老邮件 Message-ID 完好', migratedMail?.message_id === 'old-1@qq.com')
   check(
     'schema_version 已升到最新',
-    String((migrated.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string })?.value) === '3'
+    String((migrated.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string })?.value) ===
+      String(SCHEMA_VERSION)
   )
 
   // 迁移后应当能往老库写 POP3 邮件
@@ -1749,8 +1751,9 @@ async function run(root: string): Promise<void> {
   ).body_text
   check('升级后老邮件正文完好', v2Body.includes('发票'), v2Body)
   check(
-    'schema_version 已升到 3',
-    String((v2Db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string })?.value) === '3'
+    'schema_version 已升到最新（v2 库也一并升到位）',
+    String((v2Db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string })?.value) ===
+      String(SCHEMA_VERSION)
   )
   check('规则表已建立', Boolean(v2Db.prepare("SELECT name FROM sqlite_master WHERE name='rules'").get()))
   check(
@@ -2254,6 +2257,85 @@ async function run(root: string): Promise<void> {
 
   const badMove = moveMailsToFolder([dragMail], 999999)
   check('移动到不存在的文件夹时报错', Boolean(badMove.errors.length))
+
+  /* ---------- 25-pre. 附件标记：内嵌图片不算「有附件」 ---------- */
+  //
+  // 曾经的 bug：列表图标按「解析出的附件总数」算（含内嵌图片），
+  // 而详情页会把内嵌图片过滤掉。于是「只有签名 logo 这类内嵌图」的邮件
+  // 在列表里显示了回形针图标，点开却一个附件都没有。
+  section('25-pre. 附件标记（内嵌图片不算附件）')
+
+  check(
+    'hasVisibleAttachments：普通附件算',
+    hasVisibleAttachments([{ isInline: false }]) === true
+  )
+  check(
+    'hasVisibleAttachments：只有内嵌图片不算',
+    hasVisibleAttachments([{ isInline: true }]) === false
+  )
+  check(
+    'hasVisibleAttachments：内嵌 + 普通混合算',
+    hasVisibleAttachments([{ isInline: true }, { isInline: false }]) === true
+  )
+  check('hasVisibleAttachments：空列表不算', hasVisibleAttachments([]) === false)
+  check(
+    'hasVisibleAttachments：缺 isInline 字段按普通附件处理',
+    hasVisibleAttachments([{}]) === true
+  )
+
+  // 迁移：老库里「只有内嵌附件」的邮件要把标记清掉
+  const v3Path = join(root, 'v3-attach.db')
+  const v3 = openDatabase(v3Path)
+  v3.exec(`
+    CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE mails (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER NOT NULL DEFAULT 1,
+      folder_id INTEGER NOT NULL DEFAULT 1, subject TEXT NOT NULL DEFAULT '',
+      has_attachments INTEGER NOT NULL DEFAULT 0,
+      rules_done INTEGER NOT NULL DEFAULT 0, rules_fired TEXT NOT NULL DEFAULT '[]',
+      created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE attachments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, mail_id INTEGER NOT NULL,
+      filename TEXT NOT NULL DEFAULT '', content_type TEXT NOT NULL DEFAULT '',
+      size INTEGER NOT NULL DEFAULT 0, content_id TEXT,
+      is_inline INTEGER NOT NULL DEFAULT 0, stored_path TEXT,
+      created_at INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO meta (key, value) VALUES ('schema_version', '3');
+    -- 1 号：只有内嵌图（标记是错的，应清成 0）
+    INSERT INTO mails (id, has_attachments) VALUES (1, 1);
+    INSERT INTO attachments (mail_id, filename, is_inline) VALUES (1, 'logo.png', 1);
+    -- 2 号：有普通附件（标记正确，应保持 1）
+    INSERT INTO mails (id, has_attachments) VALUES (2, 1);
+    INSERT INTO attachments (mail_id, filename, is_inline) VALUES (2, 'report.pdf', 0);
+    -- 3 号：内嵌 + 普通混合（应保持 1）
+    INSERT INTO mails (id, has_attachments) VALUES (3, 1);
+    INSERT INTO attachments (mail_id, filename, is_inline) VALUES (3, 'logo.png', 1);
+    INSERT INTO attachments (mail_id, filename, is_inline) VALUES (3, 'real.docx', 0);
+    -- 4 号：正文还没下来、没有附件记录（BODYSTRUCTURE 的推测值，应保留）
+    INSERT INTO mails (id, has_attachments) VALUES (4, 1);
+    -- 5 号：本来就没附件
+    INSERT INTO mails (id, has_attachments) VALUES (5, 0);
+  `)
+  migrate(v3)
+  const flagOf = (id: number): number =>
+    (v3.prepare('SELECT has_attachments AS h FROM mails WHERE id = ?').get(id) as { h: number }).h
+  check('迁移后：只有内嵌图的邮件标记被清掉', flagOf(1) === 0, String(flagOf(1)))
+  check('迁移后：有普通附件的保持不变', flagOf(2) === 1, String(flagOf(2)))
+  check('迁移后：混合的保持不变', flagOf(3) === 1, String(flagOf(3)))
+  check(
+    '迁移后：正文未下载（无附件记录）的保留推测值，不误清',
+    flagOf(4) === 1,
+    String(flagOf(4))
+  )
+  check('迁移后：本来就没附件的仍是 0', flagOf(5) === 0, String(flagOf(5)))
+  check(
+    '迁移后 schema_version 升到最新',
+    (v3.prepare("SELECT value AS v FROM meta WHERE key='schema_version'").get() as { v: string })
+      .v === String(SCHEMA_VERSION)
+  )
+  v3.close()
 
   /* ---------- 25. mailto: 链接解析（系统邮件程序） ---------- */
   //

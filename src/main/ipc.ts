@@ -51,6 +51,12 @@ import { openArchive, inspectArchive } from './foxmail/archive'
 import { importArchive } from './foxmail/importer'
 import { exportArchive } from './foxmail/exporter'
 import { mailtoStatus, setMailtoDefault } from './mailto'
+import {
+  checkDataDirTarget,
+  dataDirInfo,
+  migrateDataDir,
+  removeOldDataDir
+} from './data-dir'
 import { takePendingMailto, ackMailto } from './mailto-queue'
 
 type Sender = Electron.IpcMainInvokeEvent
@@ -747,6 +753,15 @@ export function registerIpc(): void {
    * 不给「安装时自动抢」：默认程序是用户的选择，安装包擅自换掉不礼貌，
    * 用户往往过很久才发现点邮件链接跳到了别处。只提供查询 + 用户主动切换。
    */
+  /* ── 数据目录位置与迁移 ── */
+  ipcMain.handle('app:dataDir', () => dataDirInfo())
+  ipcMain.handle('app:dataDirCheck', (_e, target: string) => checkDataDirTarget(target))
+  ipcMain.handle('app:dataDirMigrate', async (_e, target: string) => {
+    // 迁移过程可能很久（GB 级），进度通过广播发回界面
+    return migrateDataDir(target, (p) => broadcast('datadir:progress', p))
+  })
+  ipcMain.handle('app:dataDirRemoveOld', (_e, dir: string) => removeOldDataDir(dir))
+
   ipcMain.handle('app:mailtoStatus', () => mailtoStatus())
   ipcMain.handle('app:mailtoSetDefault', () => setMailtoDefault())
 

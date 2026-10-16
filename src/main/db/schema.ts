@@ -1,7 +1,7 @@
 import type { Db } from './sqlite'
 import { createFts, ftsNeedsRebuild, rebuildFts } from './fts'
 
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 
 /**
  * 建表语句。全部使用 IF NOT EXISTS，保证在已有数据库上重复执行是安全的。
@@ -301,6 +301,34 @@ export function migrate(db: Db): void {
 
     // 全文索引会在 initSchema 里检测到结构变化后整体重建
     setMeta(db, 'schema_version', '3')
+  }
+
+  // v3 → v4：修正在列表里误显示的回形针图标
+  //
+  // 以前 has_attachments 按「解析出的附件总数」算，**包含内嵌图片**；
+  // 而详情页的附件区会把内嵌图片过滤掉。于是「只有签名 logo 这类内嵌图」
+  // 的邮件在列表里显示了回形针图标，点开却一个附件都没有。
+  //
+  // 这里只清掉**能证明是错的**那些：有附件记录、但记录全是内嵌的。
+  // 正文还没下载过的邮件（没有附件记录）保留 BODYSTRUCTURE 的推测值，
+  // 不在这里一刀切清掉 —— 那是有效的提示，等正文下来后会自然修正。
+  if (Number(getMeta(db, 'schema_version') ?? '1') < 4) {
+    const fixed = db
+      .prepare(
+        `UPDATE mails SET has_attachments = 0
+          WHERE has_attachments = 1
+            AND EXISTS (SELECT 1 FROM attachments a WHERE a.mail_id = mails.id)
+            AND NOT EXISTS (
+              SELECT 1 FROM attachments a WHERE a.mail_id = mails.id AND a.is_inline = 0
+            )`
+      )
+      .run()
+    const changed = Number((fixed as { changes?: number }).changes ?? 0)
+    if (changed > 0) {
+      // eslint-disable-next-line no-console
+      console.log(`[SimpleMail] 已修正 ${changed} 封邮件的附件标记（内嵌图片不再算附件）`)
+    }
+    setMeta(db, 'schema_version', '4')
   }
 }
 

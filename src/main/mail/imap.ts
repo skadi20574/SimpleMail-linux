@@ -12,7 +12,7 @@
 import { ImapFlow } from 'imapflow'
 import type { Account, FolderRole, SyncProgress } from '@shared/types'
 import * as repo from '../db/repo'
-import { parseMessage } from './parser'
+import { hasVisibleAttachments, parseMessage } from './parser'
 import { storeAttachment } from './attachments'
 
 export interface SyncOptions {
@@ -377,7 +377,7 @@ export async function ingestSource(
   repo.updateMailBody(mailId, {
     bodyText: parsed.bodyText,
     bodyHtml: parsed.bodyHtml,
-    hasAttachments: parsed.attachments.length > 0,
+    hasAttachments: hasVisibleAttachments(parsed.attachments),
     rawHeaders: parsed.rawHeaders || '',
     subject: parsed.subject,
     fromName: parsed.fromName,

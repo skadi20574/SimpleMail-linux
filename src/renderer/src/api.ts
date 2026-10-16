@@ -30,8 +30,13 @@ import type {
   RulePreview,
   SyncProgress,
   MailtoRequest,
-  MailtoDelivery
+  MailtoDelivery,
+  DataDirInfo,
+  DataDirProgress,
+  DataDirMigrationResult
 } from '@shared/types'
+
+export type { DataDirInfo, DataDirProgress, DataDirMigrationResult }
 
 export interface FolderOpResult extends BatchOutcome {
   folderId?: number
@@ -170,6 +175,12 @@ interface RawApi {
     /** 默认邮件程序（mailto: 处理程序） */
     mailtoStatus(): Promise<MailtoStatus>
     mailtoSetDefault(): Promise<MailtoSetResult>
+    /** 数据目录位置与迁移 */
+    dataDir(): Promise<DataDirInfo>
+    dataDirCheck(target: string): Promise<{ ok: boolean; error?: string; needBytes?: number; freeBytes?: number }>
+    dataDirMigrate(target: string): Promise<DataDirMigrationResult>
+    dataDirRemoveOld(dir: string): Promise<{ ok: boolean; error?: string }>
+    onDataDirProgress(cb: (p: DataDirProgress) => void): () => void
   }
   /**
    * 系统把 mailto: 链接交给我们时触发（首次启动带链接、或程序已在运行时

@@ -132,6 +132,20 @@ function attachScreenshotHook(win: BrowserWindow): void {
                   searchPlaceholder: document.querySelector('.searchbox input')?.getAttribute('placeholder') || '',
                   // 列表头：标题（含完整搜索条件）与总数 —— 总数才是筛选结果，
                   // rowCount 只反映当前这一页渲染了多少行
+                  // 布局几何：用坐标证明「列表在左、正文在右」，而不是靠肉眼看截图
+                  layout: (() => {
+                    const l = document.querySelector('.listwrap')
+                    const p = document.querySelector('.preview')
+                    if (!l || !p) return null
+                    const lr = l.getBoundingClientRect()
+                    const pr = p.getBoundingClientRect()
+                    return {
+                      listX: Math.round(lr.x), listW: Math.round(lr.width),
+                      previewX: Math.round(pr.x), previewW: Math.round(pr.width),
+                      sameRow: Math.abs(lr.y - pr.y) < 4,
+                      listLeftOfPreview: lr.right <= pr.left + 8
+                    }
+                  })(),
                   listTitle: (document.querySelector('.listhead .title')?.textContent || '').trim(),
                   listCount: (document.querySelector('.listhead .count')?.textContent || '').trim(),
                   // ── 写信窗口（验证 mailto: 链接有没有正确填进来）──

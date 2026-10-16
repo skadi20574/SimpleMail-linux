@@ -336,3 +336,18 @@ export function buildRfc822(input: {
   const full = `${encodedSubjectHeader}\r\n${contentTypeHeader}\r\n\r\n${body}`
   return Buffer.from(full, 'utf8')
 }
+
+/**
+ * 到底有没有「用户可见的附件」。
+ *
+ * 内嵌图片（Content-Disposition: inline，或带 Content-ID 的）**不算**：
+ * 它们是正文的一部分，已经在正文里渲染过了，详情页的附件区本来就会把
+ * 它们过滤掉（见 MailView.tsx 的 `filter(a => !a.isInline)`）。
+ *
+ * 以前列表图标按 `attachments.length > 0` 算，口径与详情页不一致，
+ * 于是「只有签名 logo 这类内嵌图」的邮件在列表里显示了回形针图标，
+ * 点开却一个附件都没有。列表与详情页必须用同一个判定。
+ */
+export function hasVisibleAttachments(atts: readonly { isInline?: boolean }[]): boolean {
+  return atts.some((a) => !a.isInline)
+}

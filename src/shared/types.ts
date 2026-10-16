@@ -470,3 +470,34 @@ export interface ResolvedAttachment {
   filename: string
   size: number
 }
+
+/* ─────────────── 数据目录位置与迁移 ─────────────── */
+
+export interface DataDirInfo {
+  /** 当前实际使用的数据目录 */
+  dataDir: string
+  /** Electron 的默认数据目录（指针文件就放在这里） */
+  defaultDataDir: string
+  /** 是否已经用了自定义目录 */
+  custom: boolean
+  /** 指针文件路径（界面上展示，便于用户知道它不会被迁移走） */
+  pointerFile: string
+  /** 数据库当前占多少字节 */
+  dbBytes: number
+}
+
+export interface DataDirProgress {
+  phase: 'copy' | 'verify' | 'switch' | 'done'
+  message: string
+  current: number
+  total: number
+}
+
+export interface DataDirMigrationResult {
+  ok: boolean
+  error?: string
+  /** 迁移后的数据目录 */
+  dataDir?: string
+  /** 迁移前的数据目录（用于「删除旧数据」） */
+  from?: string
+}

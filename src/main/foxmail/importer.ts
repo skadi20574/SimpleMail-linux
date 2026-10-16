@@ -12,7 +12,7 @@ import { iterateUnit, openArchive } from './archive'
 import { storeAttachment } from '../mail/attachments'
 import { createAccountDraft } from '@shared/account-defaults'
 import { applyRulesToMail } from '../rules'
-import { parseMessage } from '../mail/parser'
+import { hasVisibleAttachments, parseMessage } from '../mail/parser'
 
 const LOCAL_ARCHIVE_COLOR = '#8a6d3b'
 
@@ -131,7 +131,7 @@ export async function importArchive(
             size: probe.size,
             unread: false,
             flagged: false,
-            hasAttachments: probe.attachments.length > 0,
+            hasAttachments: hasVisibleAttachments(probe.attachments),
             source: 'foxmail',
             archiveTag: tag
           })

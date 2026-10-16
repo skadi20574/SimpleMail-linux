@@ -24,7 +24,7 @@
  * 的 iframe 里渲染，风险面是受控的。
  */
 
-import { app, protocol, net } from 'electron'
+import { app, dialog, protocol, net } from 'electron'
 import type { BrowserWindow } from 'electron'
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -53,6 +53,7 @@ function isAttachmentCandidate(path: string): boolean {
   return isExistingFile(path)
 }
 import { diag, installDiagnostics, logStartup } from './diagnostics'
+import { applyDataDir } from './data-dir'
 
 // 自定义协议：邮件正文里的 cid: 内联图片通过它读取磁盘上的附件文件。
 // 必须在 app ready 之前完成注册。
@@ -142,6 +143,12 @@ function dispatchMailto(request: MailtoRequest): void {
   else send()
 }
 
+/**
+ * ⚠️ 顺序很重要：先按指针文件把数据目录切过去，**再**装诊断。
+ * 否则诊断日志会写到默认目录，而真正出问题时需要看的是当前目录的日志。
+ */
+const dataDirState = applyDataDir()
+
 installDiagnostics()
 
 /**
@@ -160,7 +167,12 @@ try {
   hasSingleInstanceLock = true
 }
 
-logStartup({ singleInstanceLock: hasSingleInstanceLock })
+logStartup({
+  singleInstanceLock: hasSingleInstanceLock,
+  dataDir: dataDirState.dataDir,
+  dataDirCustom: dataDirState.custom,
+  ...(dataDirState.pointerBroken ? { dataDirPointerBroken: dataDirState.pointerBroken } : {})
+})
 
 if (!hasSingleInstanceLock) {
   // ⚠️ 这条分支里**不要**做任何初始化（数据库、IPC、窗口）——
@@ -179,6 +191,35 @@ if (!hasSingleInstanceLock) {
   })
 
   app.whenReady().then(() => {
+    /**
+     * 数据目录指向了一个不存在的位置（多半是那块盘没挂载）。
+     *
+     * ⚠️ 这里**不能**静默退回默认目录：那会在默认位置新建一个空数据库，
+     * 用户看到的就是「邮件全没了」—— 比打不开严重得多。
+     * 所以先明确告诉用户发生了什么，默认动作是退出。
+     */
+    if (dataDirState.pointerBroken) {
+      const broken = dataDirState.pointerBroken
+      const choice = dialog.showMessageBoxSync({
+        type: 'warning',
+        buttons: ['退出（推荐）', '仍然使用默认目录（会是一个空的邮件库）'],
+        defaultId: 0,
+        cancelId: 0,
+        title: 'SimpleMail',
+        message: '找不到你的数据目录',
+        detail:
+          `数据目录设置在这里：\n${broken}\n\n` +
+          '但这个位置现在不存在 —— 常见原因是那块磁盘没有挂载。\n\n' +
+          '你的邮件应该都还在那块盘上。请先挂载磁盘，再重新打开 SimpleMail。\n\n' +
+          `（设置记录在 ${join(app.getPath('userData'), 'datadir.json')}）`
+      })
+      if (choice === 0) {
+        app.quit()
+        return
+      }
+      diag('[数据目录] 用户选择在目标盘缺失的情况下继续，使用默认目录')
+    }
+
     try {
       appPaths()
       bootstrapData()
@@ -202,6 +243,27 @@ if (!hasSingleInstanceLock) {
     app.on('activate', () => {
       if (getAllWindows().length === 0) createMainWindow()
     })
+  })
+}
+
+/**
+ * 开发辅助：SIMPLEMAIL_TEST_MIGRATE=<目标目录> 时，把数据迁移过去、打印结果后退出。
+ *
+ * 迁移要搬运 GB 级数据、还会写指针文件，是最容易出错的一步；
+ * 用环境变量触发才能在自动化的端到端脚本里真的跑一遍，
+ * 而不是只靠点界面。见 scripts/ 下的验证脚本。
+ */
+if (process.env.SIMPLEMAIL_TEST_MIGRATE) {
+  app.whenReady().then(async () => {
+    const { migrateDataDir, dataDirInfo } = await import('./data-dir')
+    const target = String(process.env.SIMPLEMAIL_TEST_MIGRATE)
+    console.log(`迁移前数据目录：${dataDirInfo().dataDir}`)
+    const r = await migrateDataDir(target, (p) => {
+      console.log(`  [${p.phase}] ${p.message} (${p.current}/${p.total})`)
+    })
+    console.log(`迁移结果：${r.ok ? '成功' : '失败'} ${r.ok ? `-> ${r.dataDir}` : `- ${r.error}`}`)
+    console.log(`MIGRATE_RESULT ok=${r.ok} dataDir=${r.dataDir ?? ''} from=${r.from ?? ''}`)
+    app.exit(r.ok ? 0 : 1)
   })
 }
 

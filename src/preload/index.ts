@@ -5,7 +5,7 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 import type { ExportProgress, ImportProgress, SyncProgress } from '@shared/types'
-import type { MailtoDelivery } from '@shared/types'
+import type { DataDirProgress, MailtoDelivery } from '@shared/types'
 
 const invoke = <T>(channel: string, ...args: unknown[]): Promise<T> =>
   ipcRenderer.invoke(channel, ...args) as Promise<T>
@@ -110,7 +110,13 @@ const api = {
     restart: () => invoke('app:restart'),
     /** 默认邮件程序（mailto: 处理程序）的状态与切换 */
     mailtoStatus: () => invoke('app:mailtoStatus'),
-    mailtoSetDefault: () => invoke('app:mailtoSetDefault')
+    mailtoSetDefault: () => invoke('app:mailtoSetDefault'),
+    /** 数据目录位置与迁移 */
+    dataDir: () => invoke('app:dataDir'),
+    dataDirCheck: (target: string) => invoke('app:dataDirCheck', target),
+    dataDirMigrate: (target: string) => invoke('app:dataDirMigrate', target),
+    dataDirRemoveOld: (dir: string) => invoke('app:dataDirRemoveOld', dir),
+    onDataDirProgress: (cb: (p: DataDirProgress) => void) => on('datadir:progress', cb)
   },
   /**
    * 系统把 mailto: 链接交给我们时触发。

@@ -384,7 +384,8 @@ export default function App(): JSX.Element {
       const container = document.getElementById('main-column')
       if (!container) return
       const rect = container.getBoundingClientRect()
-      const ratio = Math.min(0.85, Math.max(0.12, (e.clientY - rect.top) / rect.height))
+      // 横向布局：比例按 X 轴算（列表占整个宽度的多少）
+      const ratio = Math.min(0.85, Math.max(0.12, (e.clientX - rect.left) / rect.width))
       splitRef.current = ratio
       setSplitPct(Math.round(ratio * 100))
     }
@@ -1305,7 +1306,7 @@ export default function App(): JSX.Element {
             <>
               <div
                 className="listwrap"
-                style={{ height: `${splitPct}%`, flex: '0 0 auto' }}
+                style={{ width: `${splitPct}%`, flex: '0 0 auto' }}
               >
                 <MailList
                   title={
@@ -1352,9 +1353,9 @@ export default function App(): JSX.Element {
                 className="splitter"
                 onMouseDown={() => {
                   dragging.current = true
-                  document.body.style.cursor = 'row-resize'
+                  document.body.style.cursor = 'col-resize'
                 }}
-                title="拖动调整列表与预览的比例"
+                title="拖动调整列表与正文的宽度比例"
               />
 
               <MailView

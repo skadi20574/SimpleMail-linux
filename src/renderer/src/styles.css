@@ -575,7 +575,9 @@ select {
 .main {
   flex: 1;
   display: flex;
-  flex-direction: column;
+  /* 邮件列表在左、正文在右。以前是上下堆叠，宽屏下读长邮件很别扭：
+     正文被压成一条横带，左右两侧全是空白。 */
+  flex-direction: row;
   min-width: 0;
   min-height: 0;
   background: var(--panel);
@@ -584,6 +586,9 @@ select {
 .listwrap {
   display: flex;
   flex-direction: column;
+  /* 宽度由 App 里的 splitRatio 决定（横向布局） */
+  flex: 0 0 auto;
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
@@ -628,16 +633,27 @@ select {
   min-height: 0;
 }
 
+/**
+ * 邮件行。
+ *
+ * ⚠️ 这里**不能**再用固定像素的 grid 列宽。改成左右布局之后，列表只是
+ * 左半边的一栏、宽度由用户拖动决定；以前写死的 `178px 1fr 122px`
+ * 在列表窄到 400 多像素时，主题列只剩十几像素，一行只能显示一个字。
+ * 改用 flex：发件人可在 178→56 之间收缩，主题吃掉剩余空间，日期不收缩。
+ */
 .mailrow {
-  display: grid;
-  grid-template-columns: 46px 178px 1fr 122px;
+  display: flex;
   align-items: center;
   height: 34px;
-  padding: 0 12px;
+  padding: 0 10px;
   border-bottom: 1px solid var(--row-border);
   cursor: default;
   user-select: none;
-  gap: 8px;
+  gap: 6px;
+}
+
+.mailrow .rowlead {
+  flex: 0 0 auto;
 }
 
 .mailrow:hover {
@@ -771,6 +787,9 @@ input.rowcheck {
 }
 
 .mailrow .from {
+  /* 宽的时候 178px，窄的时候最多压到 56px 就靠省略号 */
+  flex: 0 1 178px;
+  min-width: 48px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -778,6 +797,8 @@ input.rowcheck {
 }
 
 .mailrow .subject {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -798,6 +819,7 @@ input.rowcheck {
 }
 
 .mailrow .date {
+  flex: 0 0 auto;
   text-align: right;
   color: var(--muted);
   font-size: 12px;
@@ -853,6 +875,7 @@ input.rowcheck {
 
 .preview {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;

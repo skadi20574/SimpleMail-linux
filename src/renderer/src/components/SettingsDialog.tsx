@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { Account, AppSettings, MailtoStatus } from '../api'
+import type { Account, AppSettings, DataDirInfo, DataDirProgress, MailtoStatus } from '../api'
 import { api } from '../api'
 import { formatSize } from '../utils'
 import Icon from './Icon'
@@ -63,6 +63,11 @@ export default function SettingsDialog(props: Props): JSX.Element {
   const [wiping, setWiping] = useState(false)
   /** 默认邮件程序（mailto:）的状态 */
   const [mailto, setMailto] = useState<MailtoStatus | null>(null)
+  /** 数据目录位置与迁移状态 */
+  const [dataDir, setDataDir] = useState<DataDirInfo | null>(null)
+  const [migrating, setMigrating] = useState(false)
+  const [migrateProgress, setMigrateProgress] = useState<DataDirProgress | null>(null)
+  const [migratedFrom, setMigratedFrom] = useState<string | null>(null)
   const [mailtoLoading, setMailtoLoading] = useState(false)
   const [mailtoSetting, setMailtoSetting] = useState(false)
   /** 清除数据的界内确认（不用 window.prompt —— Electron 根本没实现它） */
@@ -71,6 +76,9 @@ export default function SettingsDialog(props: Props): JSX.Element {
 
   const shortcuts = useMemo(() => resolveShortcuts(s), [s])
   const conflicts = useMemo(() => findShortcutConflicts(shortcuts), [shortcuts])
+
+  /* 迁移进度（复制 GB 级数据时界面要有反馈） */
+  useEffect(() => api.app.onDataDirProgress(setMigrateProgress), [])
 
   /* 录制新快捷键：只监听一次 keydown，按下什么就存什么 */
   useEffect(() => {
@@ -94,18 +102,20 @@ export default function SettingsDialog(props: Props): JSX.Element {
 
   useEffect(() => {
     void (async () => {
-      const [st, p, ar, info, mt] = await Promise.all([
+      const [st, p, ar, info, mt, dd] = await Promise.all([
         api.app.stats(),
         api.app.paths(),
         api.archives.list(),
         api.app.installInfo(),
-        api.app.mailtoStatus()
+        api.app.mailtoStatus(),
+        api.app.dataDir()
       ])
       setStats(st)
       setPaths(p)
       setArchives(ar)
       setInstall(info)
       setMailto(mt)
+      setDataDir(dd)
     })()
   }, [])
 
@@ -443,6 +453,122 @@ export default function SettingsDialog(props: Props): JSX.Element {
                     </tbody>
                   </table>
                 )}
+              </div>
+
+              <div className="field">
+                <label>数据存放位置</label>
+                <div className="hint">
+                  邮件全部保存在下面这个目录里。默认在系统盘（<code>~/.config/simplemail</code>），
+                  邮件越收越多会把系统盘占满 —— 可以整体搬到别的磁盘。
+                </div>
+
+                {dataDir && (
+                  <div className="statusline info" style={{ display: 'block', marginTop: 8 }}>
+                    <div>
+                      当前使用：<span className="mono">{dataDir.dataDir}</span>
+                      {dataDir.custom ? (
+                        <span style={{ color: 'var(--ok)' }}>　（自定义位置）</span>
+                      ) : (
+                        <span style={{ color: 'var(--muted)' }}>　（默认位置）</span>
+                      )}
+                    </div>
+                    <div className="hint" style={{ marginTop: 4 }}>
+                      数据库 {formatSize(dataDir.dbBytes)}。位置记录在
+                      <code>{dataDir.pointerFile}</code>，它**不会**被一起搬走 ——
+                      所以目标盘没挂载时程序仍能启动并提示你，而不是打不开。
+                    </div>
+                  </div>
+                )}
+
+                {migrating && (
+                  <div className="statusline info" style={{ display: 'block', marginTop: 8 }}>
+                    <div>{migrateProgress?.message ?? '正在迁移…'}</div>
+                    <div className="hint" style={{ marginTop: 4 }}>
+                      {migrateProgress ? `${migrateProgress.current} / ${migrateProgress.total}` : ''}
+                    </div>
+                  </div>
+                )}
+
+                {migratedFrom && (
+                  <div className="statusline" style={{ display: 'block', marginTop: 8 }}>
+                    <div>迁移完成。原目录里的数据**没有**被删除。</div>
+                    <div className="hint" style={{ marginTop: 4 }}>
+                      重启程序后就会使用新位置。要现在删掉原目录里的数据吗？
+                      （只删本程序自己的文件，不动该目录里的其它内容）
+                    </div>
+                    <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+                      <button
+                        className="btn"
+                        onClick={async () => {
+                          const r = await api.app.dataDirRemoveOld(migratedFrom)
+                          if (r.ok) {
+                            props.onDone('已删除原数据目录里的数据')
+                            setMigratedFrom(null)
+                          } else {
+                            props.onError(r.error ?? '删除失败')
+                          }
+                        }}
+                      >
+                        删除原数据
+                      </button>
+                      <button className="btn" onClick={() => setMigratedFrom(null)}>
+                        保留（我自己处理）
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    className="btn"
+                    disabled={migrating}
+                    onClick={async () => {
+                      const picked = await api.app.pickDirectory('选择数据存放目录')
+                      if (!picked) return
+                      const check = await api.app.dataDirCheck(picked)
+                      if (!check.ok) {
+                        props.onError(check.error ?? '这个目录不能用')
+                        return
+                      }
+                      const needGb = ((check.needBytes ?? 0) / 1073741824).toFixed(2)
+                      if (
+                        !confirm(
+                          `要把数据迁移到：\n${picked}\n\n` +
+                            `需要复制约 ${needGb} GB，期间请不要关闭程序。\n` +
+                            `原数据会保留，确认新目录可用之后再决定是否删除。\n\n继续吗？`
+                        )
+                      )
+                        return
+
+                      setMigrating(true)
+                      setMigrateProgress(null)
+                      try {
+                        const r = await api.app.dataDirMigrate(picked)
+                        if (r.ok && r.dataDir) {
+                          setMigratedFrom(r.from ?? null)
+                          setDataDir(await api.app.dataDir())
+                          props.onDone('迁移完成，重启后生效')
+                        } else {
+                          props.onError(r.error ?? '迁移失败（原数据未改动）')
+                        }
+                      } finally {
+                        setMigrating(false)
+                        setMigrateProgress(null)
+                      }
+                    }}
+                  >
+                    <Icon name="folderOpen" size={14} />
+                    {dataDir?.custom ? ' 更改数据位置…' : ' 迁移到其它位置…'}
+                  </button>
+                  {dataDir && (
+                    <button
+                      className="btn"
+                      onClick={() => void api.app.openPath(dataDir.dataDir)}
+                    >
+                      打开当前目录
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="field">
