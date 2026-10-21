@@ -62,6 +62,8 @@ export default function ArchiveDialog(props: Props): JSX.Element {
   )
   const [selectedFolders, setSelectedFolders] = useState<Set<number>>(new Set())
   const [formats, setFormats] = useState<Set<ExportFormat>>(new Set(['fox', 'boxind', 'eml']))
+  /** 导出成功后是否删除原邮件（默认不删，删是不可逆的） */
+  const [deleteAfterExport, setDeleteAfterExport] = useState(false)
   const [baseName, setBaseName] = useState(() => `SimpleMail存档_${new Date().toISOString().slice(0, 10)}`)
   const [outDir, setOutDir] = useState('')
   const [exporting, setExporting] = useState(false)
@@ -149,6 +151,17 @@ export default function ArchiveDialog(props: Props): JSX.Element {
       props.onError('请至少选择一种导出格式')
       return
     }
+    if (
+      deleteAfterExport &&
+      !confirm(
+        '导出完成后会删除原邮件，确定吗？\n\n' +
+          '· 只会删除确实写进存档的邮件\n' +
+          '· IMAP 账户还会把这些邮件在服务器上移到垃圾箱\n' +
+          '· 删除后无法恢复，请先确认导出目录可用'
+      )
+    )
+      return
+
     setExporting(true)
     setExportFiles([])
     setExportErrors([])
@@ -159,11 +172,15 @@ export default function ArchiveDialog(props: Props): JSX.Element {
         folderIds: [...selectedFolders],
         outDir,
         baseName,
-        formats: [...formats]
+        formats: [...formats],
+        deleteAfterExport
       })
       setExportFiles(result.files)
       setExportErrors(result.errors)
-      props.onDone(`导出完成，共 ${result.exported} 封邮件、${result.files.length} 个文件`)
+      props.onDone(
+        `导出完成，共 ${result.exported} 封邮件、${result.files.length} 个文件` +
+          (result.deleted ? `，已删除原邮件 ${result.deleted} 封` : '')
+      )
     } catch (err) {
       props.onError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -443,6 +460,24 @@ export default function ArchiveDialog(props: Props): JSX.Element {
                     .map((k) => FORMAT_LABEL.find((f) => f.key === k)?.hint)
                     .filter(Boolean)
                     .join('；')}
+                </div>
+              </div>
+
+              <div className="field">
+                <label style={{ display: 'inline-flex', gap: 7, alignItems: 'center' }}>
+                  <input
+                    type="checkbox"
+                    checked={deleteAfterExport}
+                    onChange={(e) => setDeleteAfterExport(e.target.checked)}
+                  />
+                  导出成功后删除原邮件
+                </label>
+                <div className="hint" style={{ marginLeft: 22 }}>
+                  不勾选（默认）：只复制，原邮件保留。
+                  <br />
+                  勾选后：只删除**确实写进存档**的邮件 —— 导出失败的会保留。
+                  IMAP 账户还会同时把服务器上的移到垃圾箱，否则下次同步又会收回来。
+                  <b>此操作不可撤销</b>，建议先确认导出的文件能正常打开再清理。
                 </div>
               </div>
 

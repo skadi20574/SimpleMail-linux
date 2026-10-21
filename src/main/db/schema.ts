@@ -1,7 +1,7 @@
 import type { Db } from './sqlite'
 import { createFts, ftsNeedsRebuild, rebuildFts } from './fts'
 
-export const SCHEMA_VERSION = 4
+export const SCHEMA_VERSION = 5
 
 /**
  * 建表语句。全部使用 IF NOT EXISTS，保证在已有数据库上重复执行是安全的。
@@ -122,6 +122,19 @@ CREATE TABLE IF NOT EXISTS archives (
   created_at  INTEGER NOT NULL DEFAULT 0
 );
 
+-- 地址簿。
+-- 用途：写邮件时的收件人联想，以及回复时自动收录对方地址。
+-- email 统一用小写存，唯一索引保证同一个地址只有一条。
+CREATE TABLE IF NOT EXISTS contacts (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  email        TEXT    NOT NULL,
+  name         TEXT    NOT NULL DEFAULT '',
+  -- 收录次数：用得越多排得越前，联想结果更贴近常用联系人
+  use_count    INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER NOT NULL DEFAULT 0,
+  created_at   INTEGER NOT NULL DEFAULT 0
+);
+
 -- 自动归类 / 自动删除规则
 CREATE TABLE IF NOT EXISTS rules (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -162,6 +175,10 @@ CREATE TABLE IF NOT EXISTS sync_state (
  * 建表（IF NOT EXISTS，对已有表无影响）→ 补列迁移 → 再建索引。
  */
 const INDEX_SCHEMA = `
+CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_email ON contacts(email);
+
+CREATE INDEX IF NOT EXISTS idx_contacts_recent ON contacts(last_used_at DESC);
+
 CREATE INDEX IF NOT EXISTS idx_mails_folder_date ON mails(folder_id, date DESC, id DESC);
 
 CREATE INDEX IF NOT EXISTS idx_mails_account     ON mails(account_id, date DESC);
@@ -329,6 +346,13 @@ export function migrate(db: Db): void {
       console.log(`[SimpleMail] 已修正 ${changed} 封邮件的附件标记（内嵌图片不再算附件）`)
     }
     setMeta(db, 'schema_version', '4')
+  }
+
+  // v4 → v5：新增地址簿表。
+  // 表与索引都用了 IF NOT EXISTS，initSchema 里的 CORE_SCHEMA / INDEX_SCHEMA
+  // 会自动建好，这里只需要推进版本号（方便以后判断"这个库有没有地址簿"）。
+  if (Number(getMeta(db, 'schema_version') ?? '1') < 5) {
+    setMeta(db, 'schema_version', '5')
   }
 }
 

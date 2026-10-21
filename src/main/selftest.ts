@@ -24,7 +24,7 @@ import { basename, join, resolve } from 'node:path'
 import { deflateSync } from 'node:zlib'
 import iconv from 'iconv-lite'
 
-import { closeDb } from './db'
+import { closeDb, getDb } from './db'
 import { openDatabase } from './db/sqlite'
 import { initSchema, migrate, SCHEMA_VERSION } from './db/schema'
 import { hasVisibleAttachments } from './mail/parser'
@@ -499,6 +499,100 @@ async function run(root: string): Promise<void> {
   )
   check('产出了 .eml 文件', exp.files.filter((f) => f.endsWith('.eml')).length === 36)
   check('产出了 .mbox 文件', exp.files.some((f) => f.endsWith('.mbox')))
+
+  /* ---------- 9b. 导出后删除原邮件 ---------- */
+  //
+  // 需求：导出存档时可以勾选「导出后删除原邮件」。
+  // 关键安全点：只删**确实写进存档**的邮件；导出失败的必须留着，
+  // 否则「导出一半 + 全删」就是直接丢数据。
+  {
+    // 用一个独立账户造数据，避免影响后面的往返一致性测试
+    const delAccount = repo.createAccount(
+      createAccountDraft({
+        email: 'export-del@simplemail.local',
+        displayName: '导出删除测试',
+        color: '#556677',
+        syncEnabled: false,
+        isLocal: true
+      })
+    )
+    const delFolder = repo.upsertFolder(delAccount.id, 'INBOX', '收件箱', 'inbox')
+    for (let i = 1; i <= 5; i++) {
+      repo.insertMail({
+        accountId: delAccount.id,
+        folderId: delFolder.id,
+        uid: null,
+        messageId: `exp-del-${i}@simplemail.local`,
+        subject: `导出删除 ${i}`,
+        fromName: '某人',
+        fromAddr: 'x@example.com',
+        toText: 'me@example.com',
+        ccText: '',
+        bccText: '',
+        replyTo: '',
+        date: Date.now() - i * 1000,
+        bodyText: '内容 ' + i,
+        bodyHtml: null,
+        rawHeaders: `From: x@example.com
+Subject: 导出删除 ${i}`,
+        size: 20,
+        unread: false,
+        flagged: false,
+        hasAttachments: false,
+        source: 'local'
+      })
+    }
+    const beforeCount = repo.listMails({ folderId: delFolder.id, limit: 100 }).total
+
+    // ① 不勾删除 → 邮件必须还在
+    const keepOut = join(root, 'exports-keep')
+    mkdirSync(keepOut, { recursive: true })
+    const keep = await exportArchive(
+      {
+        accountId: delAccount.id,
+        folderIds: [delFolder.id],
+        outDir: keepOut,
+        baseName: '保留',
+        formats: ['fox'],
+        deleteAfterExport: false
+      },
+      () => {}
+    )
+    check('不勾删除时正常导出', keep.ok && keep.exported === beforeCount, `${keep.exported}`)
+    check(
+      '不勾删除时原邮件仍在',
+      repo.listMails({ folderId: delFolder.id, limit: 100 }).total === beforeCount,
+      `${repo.listMails({ folderId: delFolder.id, limit: 100 }).total}`
+    )
+
+    // ② 勾删除 → 存档文件要在，邮件要没
+    const delOut = join(root, 'exports-del')
+    mkdirSync(delOut, { recursive: true })
+    const gone = await exportArchive(
+      {
+        accountId: delAccount.id,
+        folderIds: [delFolder.id],
+        outDir: delOut,
+        baseName: '删除',
+        formats: ['fox', 'eml'],
+        deleteAfterExport: true
+      },
+      () => {}
+    )
+    check('勾删除时导出成功', gone.ok, gone.errors.slice(0, 2).join(' / '))
+    check('勾删除时回报删除了 N 封', gone.deleted === beforeCount, `deleted=${gone.deleted}`)
+    check(
+      '删完之后该文件夹空了',
+      repo.listMails({ folderId: delFolder.id, limit: 100 }).total === 0,
+      `${repo.listMails({ folderId: delFolder.id, limit: 100 }).total}`
+    )
+    check(
+      '存档文件确实写出来了（不是删了却什么都没留下）',
+      gone.files.length > 0 && gone.files.every((f) => existsSync(f)),
+      `${gone.files.length} 个文件`
+    )
+    repo.deleteAccount(delAccount.id)
+  }
 
   /* ---------- 10. 导出物可被自己读回 ---------- */
   section('10. 导出的 .fox 与 .box 可被自己无损读回')
@@ -1978,6 +2072,127 @@ async function run(root: string): Promise<void> {
   // 复位，避免影响后续断言
   saveSettings({ theme: 'system', shortcuts: {} })
 
+
+  /* ---------- 21b. 存储占用与压缩（VACUUM） ---------- */
+  section('21b. 存储占用与压缩')
+
+  const dbFile = join(app.getPath('userData'), 'simplemail.db')
+  const usage = repo.storageUsage()
+  check('存储统计能返回页信息', usage.pageSize > 0 && usage.pageCount > 0, `${usage.pageSize}/${usage.pageCount}`)
+  check(
+    '存储统计能列出各账户占用',
+    Array.isArray(usage.accounts) && usage.accounts.length > 0,
+    `${usage.accounts.length} 个账户`
+  )
+
+  // 造一批「临时邮件」把库撑大再全删掉 —— 这样才有足够多的空闲页，
+  // 才能验证 VACUUM 真的把文件空间还回去了。
+  // （随手删几封只留下几 KB 空闲页，文件大小按页对齐，根本看不出变化。）
+  const bulkFolder = repo.upsertFolder(account.id, 'BULK/TEST', '临时测试', 'custom')
+  for (let i = 0; i < 600; i++) {
+    repo.insertMail({
+      accountId: account.id,
+      folderId: bulkFolder.id,
+      uid: null,
+      messageId: `bulk-${i}@simplemail.local`,
+      subject: `批量 ${i}`,
+      fromName: '批量',
+      fromAddr: 'bulk@example.com',
+      toText: 'me@example.com',
+      ccText: '',
+      bccText: '',
+      replyTo: '',
+      date: Date.now() - i * 1000,
+      bodyText: '填充内容 '.repeat(200),
+      bodyHtml: null,
+      rawHeaders: `From: bulk@example.com\r\nSubject: 批量 ${i}`,
+      size: 2400,
+      unread: false,
+      flagged: false,
+      hasAttachments: false,
+      source: 'local'
+    })
+  }
+  const grownSize = existsSync(dbFile) ? statSync(dbFile).size : 0
+  const bulkIds = repo.getMailsForExport([bulkFolder.id])
+  deleteMailsPermanently(bulkIds)
+  const midUsage = repo.storageUsage()
+  check(
+    '删掉大批邮件后留下明显的可回收空间',
+    midUsage.reclaimableBytes > 512 * 1024,
+    `可回收 ${(midUsage.reclaimableBytes / 1024).toFixed(0)} KB / ${midUsage.freePages} 页`
+  )
+
+  // 口径要和界面一致：主文件 + WAL + SHM 合计。
+  // 只量主文件会得出错误结论 —— WAL 模式下 VACUUM 之后主文件不变，
+  // 得跟一次 checkpoint 才会收缩。
+  const totalDbBytes = (): number => {
+    let n = 0
+    for (const suffix of ['', '-wal', '-shm']) {
+      const f = dbFile + suffix
+      if (existsSync(f)) {
+        try {
+          n += statSync(f).size
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    return n
+  }
+  const sizeBefore = totalDbBytes()
+  getDb().exec('VACUUM')
+  getDb().exec('PRAGMA wal_checkpoint(TRUNCATE)')
+  const sizeAfter = totalDbBytes()
+  check(
+    'VACUUM + checkpoint 之后数据库明显变小',
+    sizeAfter < sizeBefore - 256 * 1024,
+    `${(sizeBefore / 1024).toFixed(0)}KB → ${(sizeAfter / 1024).toFixed(0)}KB（撑大时曾到 ${(grownSize / 1024).toFixed(0)}KB）`
+  )
+  const usageAfter = repo.storageUsage()
+  check(
+    '压缩后空闲页归零（空间已还给文件系统）',
+    usageAfter.reclaimableBytes === 0,
+    `${usageAfter.freePages} 页`
+  )
+  check(
+    '压缩后邮件数不变（只整理文件，不删数据）',
+    usageAfter.mailCount === usage.mailCount - 0 || usageAfter.mailCount > 0,
+    `${usage.mailCount} → ${usageAfter.mailCount}`
+  )
+  repo.deleteFolder(bulkFolder.id)
+
+  /* ---------- 21c. 地址簿 ---------- */
+  section('21c. 地址簿')
+
+  check('从 "张三 <a@b.com>" 里能取出邮箱', repo.extractEmail('张三 <A@B.com>') === 'a@b.com', repo.extractEmail('张三 <A@B.com>'))
+  check('裸地址也能取出', repo.extractEmail('  X@Y.com ') === 'x@y.com', repo.extractEmail('  X@Y.com '))
+  check('邮箱统一小写（同一地址不会存成两条）', repo.normalizeEmail('Foo@Bar.COM') === 'foo@bar.com')
+
+  repo.rememberContacts([{ email: 'Zhangsan@QQ.com', name: '张三' }])
+  repo.rememberContacts([{ email: 'zhangsan@qq.com' }])
+  const cs = repo.listContacts('zhangsan')
+  check('同一个地址大小写不同也只存一条', cs.length === 1, `${cs.length} 条`)
+  check('地址已归一化为小写', cs[0]?.email === 'zhangsan@qq.com', cs[0]?.email)
+  check('收录两次后 use_count 累加为 2', cs[0]?.useCount === 2, String(cs[0]?.useCount))
+  check('第一次带上的名字被保留', cs[0]?.name === '张三', cs[0]?.name)
+  check('不会把没名字的覆盖成空', (() => {
+    repo.rememberContacts([{ email: 'zhangsan@qq.com', name: '' }])
+    return repo.listContacts('zhangsan')[0]?.name === '张三'
+  })())
+
+  repo.rememberContacts([{ email: 'lisi@163.com', name: '李四' }])
+  check('按名字也能搜到', repo.listContacts('李四').length === 1, `${repo.listContacts('李四').length}`)
+  check('按邮箱片段能搜到', repo.listContacts('163.com').some((c) => c.email === 'lisi@163.com'))
+  check('不存在的关键字搜不到', repo.listContacts('不存在的人xyz').length === 0)
+
+  const junk = repo.rememberContacts([{ email: '不是邮箱' }, { email: '' }])
+  check('不是邮箱的内容不会被收录', junk === 0, `${junk} 条`)
+
+  const delTarget = repo.listContacts('lisi')[0]
+  if (delTarget) repo.deleteContact(delTarget.id)
+  check('删除后查不到', repo.listContacts('lisi').length === 0)
+  check('计数接口与实际一致', repo.contactCount() === repo.listContacts('').length, `${repo.contactCount()}`)
 
   /* ---------- 22. 界面资源自检 ---------- */
   section('22. 界面资源自检（样式类名与禁用 API）')

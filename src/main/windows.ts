@@ -234,6 +234,13 @@ function attachScreenshotHook(win: BrowserWindow): void {
                   })),
                   // 当前预览的邮件主题 + 列表前几行的主题：
                   // 用来验证「删除后自动跳到下一封」到底跳对了没有
+                  // 地址簿联想（验证写信时的联系人联想）
+                  // 提示条文字：用来验证「Ctrl+Enter 触发发送」这类只有副作用的行为
+                  toast: (document.querySelector('.toast')?.textContent || '').trim(),
+                  addrSuggestOpen: Boolean(document.querySelector('.addrsug')),
+                  addrSuggest: [...document.querySelectorAll('.addrsug-item')]
+                    .map(el => (el.textContent || '').trim()),
+                  addrToValue: (document.querySelector('.addr-to')?.value ?? ''),
                   previewSubject: (document.querySelector('.preview-subject')?.textContent || '').trim(),
                   previewId: (() => {
                     const a = document.querySelector('.mailrow.active')

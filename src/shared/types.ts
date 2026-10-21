@@ -266,6 +266,13 @@ export interface ExportOptions {
   /** 存档文件名（不含扩展名） */
   baseName: string
   formats: ExportFormat[]
+  /**
+   * 导出成功后是否删除这些原邮件。
+   *
+   * ⚠️ 只删**确实写进存档**的那些：导出过程里失败的邮件会留在原处，
+   * 否则「导出一半 + 全删」就是直接丢数据。
+   */
+  deleteAfterExport?: boolean
 }
 
 export interface ExportProgress {
@@ -281,6 +288,8 @@ export interface ExportResult {
   files: string[]
   exported: number
   errors: string[]
+  /** 勾了「导出后删除原邮件」时，实际删掉了多少封 */
+  deleted?: number
 }
 
 /** 对存档做「体检」，不导入，只报告结构，便于把报告发回来定位格式 */
@@ -506,4 +515,33 @@ export interface DataDirMigrationResult {
   dataDir?: string
   /** 迁移前的数据目录（用于「删除旧数据」） */
   from?: string
+}
+
+/* ─────────────── 存储占用与压缩 ─────────────── */
+
+export interface StorageUsage {
+  /** 数据库本体（含 WAL/SHM）字节数 */
+  dbBytes: number
+  /** 附件文件合计 */
+  attachmentBytes: number
+  attachmentFiles: number
+  mailCount: number
+  /** SQLite 空闲页能回收多少 —— 压缩的收益上限 */
+  reclaimableBytes: number
+  pageSize: number
+  pageCount: number
+  freePages: number
+  /** 各账户的占用（附件按账户汇总） */
+  accounts: { accountId: number; email: string; mails: number; files: number; bytes: number }[]
+  dataDir: string
+}
+
+export interface VacuumResult {
+  ok: boolean
+  error?: string
+  beforeBytes?: number
+  afterBytes?: number
+  /** 省下来的字节数 */
+  savedBytes?: number
+  ms?: number
 }

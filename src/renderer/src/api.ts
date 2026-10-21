@@ -33,10 +33,20 @@ import type {
   MailtoDelivery,
   DataDirInfo,
   DataDirProgress,
-  DataDirMigrationResult
+  DataDirMigrationResult,
+  StorageUsage,
+  VacuumResult
 } from '@shared/types'
 
-export type { DataDirInfo, DataDirProgress, DataDirMigrationResult }
+export type { DataDirInfo, DataDirProgress, DataDirMigrationResult, StorageUsage, VacuumResult }
+
+export interface Contact {
+  id: number
+  email: string
+  name: string
+  useCount: number
+  lastUsedAt: number
+}
 
 export interface FolderOpResult extends BatchOutcome {
   folderId?: number
@@ -117,6 +127,12 @@ interface RawApi {
     onImportProgress(cb: (p: ImportProgress) => void): () => void
     onExportProgress(cb: (p: ExportProgress) => void): () => void
   }
+  contacts: {
+    list(query?: string): Promise<Contact[]>
+    remember(entries: { email: string; name?: string }[]): Promise<number>
+    remove(id: number): Promise<{ ok: boolean }>
+    count(): Promise<number>
+  }
   rules: {
     list(accountId?: number): Promise<Rule[]>
     save(draft: RuleDraft): Promise<Rule>
@@ -178,6 +194,8 @@ interface RawApi {
     mailtoSetDefault(): Promise<MailtoSetResult>
     /** 数据目录位置与迁移 */
     dataDir(): Promise<DataDirInfo>
+    storage(): Promise<StorageUsage>
+    vacuum(): Promise<VacuumResult>
     dataDirCheck(target: string): Promise<{ ok: boolean; error?: string; needBytes?: number; freeBytes?: number }>
     dataDirMigrate(target: string): Promise<DataDirMigrationResult>
     dataDirRemoveOld(dir: string): Promise<{ ok: boolean; error?: string }>

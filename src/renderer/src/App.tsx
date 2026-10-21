@@ -564,7 +564,27 @@ export default function App(): JSX.Element {
   const reply = (mail: MailDetail, mode: 'reply' | 'replyAll' | 'forward'): void => {
     const account = accounts.find((a) => a.id === mail.accountId) ?? accounts[0]
     if (!account) return
-    setComposer(buildReplyInit(account.id, mail, mode, account.signature))
+    const init = buildReplyInit(account.id, mail, mode, account.signature)
+    setComposer(init)
+
+    // 回复时把对方地址收进地址簿（用户明确要的行为）：
+    // 以后写信时输入几个字就能联想出来，不用记邮箱。
+    // 失败不影响写信，所以不 await 也不报错。
+    const entries: { email: string; name: string }[] = []
+    if (mode !== 'forward' && mail.fromAddr) {
+      entries.push({ email: mail.fromAddr, name: mail.fromName ?? '' })
+    }
+    // 回复全部时，抄送里的其他人也一并收录
+    if (mode === 'replyAll' && mail.ccText) {
+      for (const part of mail.ccText.split(/[,;]/)) {
+        const m = /<([^>]+)>/.exec(part)
+        const email = (m ? m[1] : part).trim()
+        if (email.includes('@')) {
+          entries.push({ email, name: m ? part.replace(/<[^>]*>/, '').trim().replace(/^["']|["']$/g, '') : '' })
+        }
+      }
+    }
+    if (entries.length) void api.contacts.remember(entries).catch(() => undefined)
   }
 
   /* ─────────────── 多选 ─────────────── */

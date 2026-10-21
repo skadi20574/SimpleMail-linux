@@ -10,6 +10,7 @@
  *   · `.mbox`     —— 标准 mbox，Thunderbird / mutt / Outlook 都能读。
  */
 
+import { deleteMailsPermanently } from '../mail/actions'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ExportOptions, ExportProgress, ExportResult, Folder } from '@shared/types'
@@ -290,7 +291,38 @@ export async function exportArchive(
     }
   }
 
-  emit({ phase: 'done', current: total, total, message: `导出完成，共 ${files.length} 个文件` })
+  // ── 可选：导出成功后删除原邮件 ──────────────────────────────────
+  //
+  // 只删**真正写进存档**的那些邮件：收集阶段失败的邮件没有进 rawsByFolder，
+  // 自然不在删除名单里。否则「导出一半 + 全删」就等于直接丢邮件。
+  let deleted = 0
+  if (options.deleteAfterExport) {
+    const exportedIds: number[] = []
+    for (const list of rawsByFolder.values()) {
+      for (const m of list) exportedIds.push(m.id)
+    }
+    // 有邮件导出失败时保守一点：只删成功的那些，并在结果里说清楚
+    const failed = total - exportedIds.length
+    emit({
+      phase: 'writing',
+      current: total,
+      total,
+      message: `正在删除已导出的原邮件（${exportedIds.length} 封）…`
+    })
+    const outcome = deleteMailsPermanently(exportedIds)
+    deleted = outcome.affected
+    if (failed > 0) {
+      errors.push(`有 ${failed} 封邮件导出失败，已保留未删除`)
+    }
+  }
 
-  return { ok: true, files, exported: total, errors }
+  emit({
+    phase: 'done',
+    current: total,
+    total,
+    message:
+      `导出完成，共 ${files.length} 个文件` + (deleted ? `；已删除原邮件 ${deleted} 封` : '')
+  })
+
+  return { ok: true, files, exported: total, errors, deleted }
 }

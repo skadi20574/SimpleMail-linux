@@ -1208,6 +1208,170 @@ export function listMailsForRuleScan(accountId: number | null, limit: number): M
 
 /* ─────────────────────────────── 统计 ─────────────────────────────── */
 
+/**
+ * 存储占用明细。
+ *
+ * `reclaimableBytes` 是 SQLite 空闲页占的字节数 —— 删过邮件之后这些页
+ * 还留在文件里没还给系统，`VACUUM` 就是把它们收回去。界面上要显示这个数字，
+ * 否则用户不知道"压缩"到底能省多少、值不值得等。
+ */
+/* ─────────────────────────────── 地址簿 ─────────────────────────────── */
+
+/**
+ * 规范邮箱地址：小写 + 去空白。
+ * 同一个地址大小写不同必须归成一条，否则地址簿会越来越乱。
+ */
+export function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase()
+}
+
+/** 从 "张三 <a@b.com>" 里取出地址；纯地址原样返回 */
+export function extractEmail(text: string): string {
+  const m = /<([^>]+)>/.exec(text)
+  const raw = m ? m[1] : text
+  return normalizeEmail(raw)
+}
+
+/**
+ * 收录一批地址。
+ *
+ * 已经存在的就累加 use_count 并刷新 last_used_at（用于排序），
+ * 不存在就新建。传了名字时，只有在原来没有名字的情况下才补上，
+ * 避免每次发信都把用户手动改过的名字覆盖掉。
+ */
+export function rememberContacts(
+  entries: { email: string; name?: string }[]
+): number {
+  const db = getDb()
+  const now = Date.now()
+  const stmt = db.prepare(
+    `INSERT INTO contacts (email, name, use_count, last_used_at, created_at)
+     VALUES (?, ?, 1, ?, ?)
+     ON CONFLICT(email) DO UPDATE SET
+       use_count = use_count + 1,
+       last_used_at = excluded.last_used_at,
+       name = CASE WHEN contacts.name = '' THEN excluded.name ELSE contacts.name END`
+  )
+  let n = 0
+  for (const e of entries) {
+    const email = normalizeEmail(e.email)
+    // 只收看起来像邮箱的，别把 "未指定收件人" 这种垃圾塞进去
+    if (!email || !email.includes('@')) continue
+    try {
+      stmt.run(email, (e.name ?? '').trim(), now, now)
+      n++
+    } catch {
+      /* 单条失败不影响其它 */
+    }
+  }
+  return n
+}
+
+/** 地址簿列表；query 会同时匹配邮箱和名字 */
+export function listContacts(query = '', limit = 200): {
+  id: number
+  email: string
+  name: string
+  useCount: number
+  lastUsedAt: number
+}[] {
+  const db = getDb()
+  const q = query.trim()
+  const sql = q
+    ? `SELECT * FROM contacts
+        WHERE email LIKE ? OR name LIKE ?
+        ORDER BY use_count DESC, last_used_at DESC LIMIT ?`
+    : `SELECT * FROM contacts ORDER BY use_count DESC, last_used_at DESC LIMIT ?`
+  const rows = q
+    ? db.prepare(sql).all(`%${q}%`, `%${q}%`, limit)
+    : db.prepare(sql).all(limit)
+  return plainAll<{
+    id: number
+    email: string
+    name: string
+    use_count: number
+    last_used_at: number
+  }>(rows).map((r) => ({
+    id: r.id,
+    email: r.email,
+    name: r.name,
+    useCount: Number(r.use_count ?? 0),
+    lastUsedAt: Number(r.last_used_at ?? 0)
+  }))
+}
+
+export function deleteContact(id: number): void {
+  getDb().prepare('DELETE FROM contacts WHERE id = ?').run(id)
+}
+
+export function contactCount(): number {
+  const row = plain<{ c: number }>(getDb().prepare('SELECT COUNT(*) AS c FROM contacts').get())
+  return row?.c ?? 0
+}
+
+export function storageUsage(): {
+  dbBytes: number
+  pageSize: number
+  pageCount: number
+  freePages: number
+  reclaimableBytes: number
+  mailCount: number
+  attachmentCount: number
+  accounts: { accountId: number; email: string; files: number; bytes: number }[]
+} {
+  const db = getDb()
+  const one = <T>(sql: string, fallback: T): T => {
+    try {
+      return plain<T>(db.prepare(sql).get()) ?? fallback
+    } catch {
+      return fallback
+    }
+  }
+
+  // ⚠️ PRAGMA 返回的列名就是 pragma 自己的名字（page_size / page_count /
+  // freelist_count），不是通用的 "v"。写错列名不会报错，只会静默拿到
+  // undefined —— 界面上就显示成 0，看着像"没有可回收空间"。
+  const pageSize = Number(one<{ page_size: number }>('PRAGMA page_size', { page_size: 0 }).page_size ?? 0)
+  const pageCount = Number(
+    one<{ page_count: number }>('PRAGMA page_count', { page_count: 0 }).page_count ?? 0
+  )
+  const freePages = Number(
+    one<{ freelist_count: number }>('PRAGMA freelist_count', { freelist_count: 0 }).freelist_count ?? 0
+  )
+
+  const perAccount = plainAll<{ account_id: number; email: string; files: number; bytes: number }>(
+    db
+      .prepare(
+        `SELECT a.id AS account_id, a.email AS email,
+                COUNT(att.id) AS files,
+                COALESCE(SUM(att.size), 0) AS bytes
+           FROM accounts a
+           LEFT JOIN mails m ON m.account_id = a.id
+           LEFT JOIN attachments att ON att.mail_id = m.id
+          GROUP BY a.id
+          ORDER BY bytes DESC`
+      )
+      .all()
+  ).map((r) => ({
+    accountId: r.account_id,
+    email: r.email,
+    files: Number(r.files ?? 0),
+    bytes: Number(r.bytes ?? 0)
+  }))
+
+  const counts = totalCounts()
+  return {
+    dbBytes: pageSize * pageCount,
+    pageSize,
+    pageCount,
+    freePages,
+    reclaimableBytes: pageSize * freePages,
+    mailCount: counts.mails,
+    attachmentCount: perAccount.reduce((n, a) => n + a.files, 0),
+    accounts: perAccount
+  }
+}
+
 export function totalCounts(): { mails: number; accounts: number } {
   const db = getDb()
   const m = plain<{ c: number }>(db.prepare('SELECT COUNT(*) AS c FROM mails').get())

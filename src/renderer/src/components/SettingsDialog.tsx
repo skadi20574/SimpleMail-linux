@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { Account, AppSettings, DataDirInfo, DataDirProgress, MailtoStatus } from '../api'
+import type {
+  Account,
+  AppSettings,
+  DataDirInfo,
+  DataDirProgress,
+  Contact,
+  MailtoStatus,
+  StorageUsage
+} from '../api'
 import { api } from '../api'
 import { formatSize } from '../utils'
 import Icon from './Icon'
@@ -71,6 +79,13 @@ export default function SettingsDialog(props: Props): JSX.Element {
   const [migrating, setMigrating] = useState(false)
   const [migrateProgress, setMigrateProgress] = useState<DataDirProgress | null>(null)
   const [migratedFrom, setMigratedFrom] = useState<string | null>(null)
+  /** 存储占用与压缩 */
+  const [storage, setStorage] = useState<StorageUsage | null>(null)
+  const [vacuuming, setVacuuming] = useState(false)
+  /** 地址簿 */
+  const [contacts, setContacts] = useState<Contact[]>([])
+  const [contactQuery, setContactQuery] = useState('')
+  const [contactTotal, setContactTotal] = useState(0)
   /** 自动收取状态（下次执行时间在界面上显示给用户看） */
   const [autoSync, setAutoSync] = useState<{
     enabled: boolean
@@ -86,6 +101,18 @@ export default function SettingsDialog(props: Props): JSX.Element {
 
   const shortcuts = useMemo(() => resolveShortcuts(s), [s])
   const conflicts = useMemo(() => findShortcutConflicts(shortcuts), [shortcuts])
+
+  /* 地址簿搜索（防抖，避免每敲一个字查一次库） */
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      void api.contacts.list(contactQuery).then(setContacts)
+    }, 150)
+    return () => window.clearTimeout(t)
+  }, [contactQuery])
+
+  useEffect(() => {
+    void api.contacts.count().then(setContactTotal)
+  }, [])
 
   /* 「下次收取」时间要跟着走，否则用户看一眼就以为是死的 */
   useEffect(() => {
@@ -120,14 +147,15 @@ export default function SettingsDialog(props: Props): JSX.Element {
 
   useEffect(() => {
     void (async () => {
-      const [st, p, ar, info, mt, dd, as] = await Promise.all([
+      const [st, p, ar, info, mt, dd, as, su] = await Promise.all([
         api.app.stats(),
         api.app.paths(),
         api.archives.list(),
         api.app.installInfo(),
         api.app.mailtoStatus(),
         api.app.dataDir(),
-        api.sync.autoStatus()
+        api.sync.autoStatus(),
+        api.app.storage()
       ])
       setStats(st)
       setPaths(p)
@@ -136,6 +164,7 @@ export default function SettingsDialog(props: Props): JSX.Element {
       setMailto(mt)
       setDataDir(dd)
       setAutoSync(as)
+      setStorage(su)
     })()
   }, [])
 
@@ -640,6 +669,149 @@ export default function SettingsDialog(props: Props): JSX.Element {
                     </button>
                   )}
                 </div>
+              </div>
+
+              <div className="field">
+                <label>存储占用与压缩</label>
+                <div className="hint">
+                  删过邮件之后，数据库文件不会自动变小（SQLite 只是把那些页标记为空闲）。
+                  这里的「压缩」会把空闲空间真正还给磁盘。
+                </div>
+
+                {storage ? (
+                  <div className="statusline info" style={{ display: 'block', marginTop: 8 }}>
+                    <div>
+                      数据库 <b>{formatSize(storage.dbBytes)}</b>
+                      　附件 <b>{formatSize(storage.attachmentBytes)}</b>（{storage.attachmentFiles} 个）
+                      　邮件 <b>{storage.mailCount}</b> 封
+                    </div>
+                    <div className="hint" style={{ marginTop: 4 }}>
+                      可回收空间：<b>{formatSize(storage.reclaimableBytes)}</b>
+                      （SQLite 空闲页 {storage.freePages} 页 × {storage.pageSize} 字节）
+                    </div>
+                    {(storage.accounts ?? []).length > 0 && (
+                      <table className="tbl" style={{ marginTop: 6 }}>
+                        <thead>
+                          <tr>
+                            <th>账户</th>
+                            <th className="num">邮件</th>
+                            <th className="num">附件</th>
+                            <th className="num">附件占用</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(storage.accounts ?? []).map((a) => (
+                            <tr key={a.accountId}>
+                              <td className="mono">{a.email}</td>
+                              <td className="num">{a.mails}</td>
+                              <td className="num">{a.files}</td>
+                              <td className="num">{formatSize(a.bytes)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                ) : (
+                  <div className="hint">正在统计…</div>
+                )}
+
+                <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    className="btn"
+                    disabled={vacuuming}
+                    onClick={async () => {
+                      const reclaim = storage ? formatSize(storage.reclaimableBytes) : '未知'
+                      if (
+                        !confirm(
+                          `压缩数据库？\n\n` +
+                            `预计可回收约 ${reclaim}。\n` +
+                            `过程会把整个数据库重写一遍，大库可能要几十秒，期间界面会卡住。\n` +
+                            `请确保程序所在磁盘有足够的剩余空间（需要一份等大的临时空间）。\n\n继续吗？`
+                        )
+                      )
+                        return
+                      setVacuuming(true)
+                      try {
+                        const r = await api.app.vacuum()
+                        if (r.ok) {
+                          props.onDone(
+                            `压缩完成：${formatSize(r.beforeBytes ?? 0)} → ${formatSize(r.afterBytes ?? 0)}` +
+                              `（省下 ${formatSize(r.savedBytes ?? 0)}，用时 ${((r.ms ?? 0) / 1000).toFixed(1)} 秒）`
+                          )
+                          setStorage(await api.app.storage())
+                        } else {
+                          props.onError(r.error ?? '压缩失败')
+                        }
+                      } finally {
+                        setVacuuming(false)
+                      }
+                    }}
+                  >
+                    <Icon name="database" size={14} />
+                    {vacuuming ? ' 正在压缩…' : ' 压缩数据库'}
+                  </button>
+                  <button className="btn" onClick={async () => setStorage(await api.app.storage())}>
+                    重新统计
+                  </button>
+                </div>
+              </div>
+
+              <div className="field">
+                <label>地址簿</label>
+                <div className="hint">
+                  回复或发信时会自动把对方地址收进来，写信时在收件人框里输入几个字就能联想。
+                  这里可以搜索和删除。
+                </div>
+                <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input
+                    value={contactQuery}
+                    placeholder="搜索邮箱或名字"
+                    onChange={(e) => setContactQuery(e.target.value)}
+                    style={{ height: 28, flex: '1 1 auto', minWidth: 160 }}
+                  />
+                  <span className="hint" style={{ margin: 0, whiteSpace: 'nowrap' }}>
+                    共 {contactTotal} 个
+                  </span>
+                </div>
+                {contacts.length === 0 ? (
+                  <div className="hint" style={{ marginTop: 6 }}>
+                    {contactQuery ? '没有匹配的联系人' : '地址簿还是空的 —— 回复或发信后会自动收录'}
+                  </div>
+                ) : (
+                  <table className="tbl" style={{ marginTop: 6 }}>
+                    <thead>
+                      <tr>
+                        <th>名字</th>
+                        <th>邮箱</th>
+                        <th className="num">用过</th>
+                        <th style={{ width: 48 }}></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {contacts.map((c) => (
+                        <tr key={c.id}>
+                          <td>{c.name || '—'}</td>
+                          <td className="mono">{c.email}</td>
+                          <td className="num">{c.useCount}</td>
+                          <td>
+                            <button
+                              className="iconbtn"
+                              title="从地址簿删除"
+                              onClick={async () => {
+                                await api.contacts.remove(c.id)
+                                setContacts(await api.contacts.list(contactQuery))
+                                setContactTotal(await api.contacts.count())
+                              }}
+                            >
+                              删除
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </div>
 
               <div className="field">

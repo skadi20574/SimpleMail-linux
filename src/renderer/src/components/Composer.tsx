@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import AddressField from './AddressField'
 import type { Account, ComposeAttachment, ComposePayload, MailDetail } from '../api'
 import { api } from '../api'
 import { forwardSubject, formatFullDate, replySubject, shortAddress } from '../utils'
@@ -87,6 +88,38 @@ export default function Composer(props: Props): JSX.Element {
 
   useEffect(() => {
     bodyRef.current?.focus()
+  }, [])
+
+  /**
+   * Ctrl/Cmd + Enter 发送。
+   *
+   * 挂在 window 上而不是某个输入框：写信时有收件人/主题/正文多个焦点位置，
+   * 用户不该每次先点回正文才能用快捷键。用捕获阶段抢在别的处理器之前。
+   *
+   * 用 isComposing 排除中文输入法正在组词的情况 —— 输入法选词时敲回车很常见，
+   * 那一刻不能把邮件发出去。
+   *
+   * ⚠️ 这里必须走 ref：监听器只在挂载时注册一次（避免每敲一个字就重装监听），
+   * 但 doSend 依赖 form 等一堆状态。直接闭包会捕获**旧的** form ——
+   * 表现为「刚打的正文没被发出去，发的是打开时空的内容」。
+   */
+  const sendOnceRef = useRef<() => void>(() => {})
+  useEffect(() => {
+    sendOnceRef.current = () => {
+      if (!sending) void doSend()
+    }
+  })
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Enter' || !(e.ctrlKey || e.metaKey)) return
+      if (e.isComposing) return
+      e.preventDefault()
+      e.stopPropagation()
+      sendOnceRef.current()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
   }, [])
 
   const patch = (p: Partial<ComposeInit>): void => {
@@ -216,10 +249,11 @@ export default function Composer(props: Props): JSX.Element {
 
           <div className="compose-row">
             <label>收件人</label>
-            <input
+            <AddressField
+              name="to"
               value={form.to}
-              onChange={(e) => patch({ to: e.target.value })}
-              placeholder="多个地址用逗号分隔，例如 a@qq.com, b@163.com"
+              onChange={(v) => patch({ to: v })}
+              placeholder="多个地址用逗号分隔，输入时会联想地址簿"
             />
           </div>
 
@@ -227,11 +261,21 @@ export default function Composer(props: Props): JSX.Element {
             <>
               <div className="compose-row">
                 <label>抄送</label>
-                <input value={form.cc} onChange={(e) => patch({ cc: e.target.value })} />
+                <AddressField
+                  name="cc"
+                  value={form.cc}
+                  onChange={(v) => patch({ cc: v })}
+                  placeholder="抄送"
+                />
               </div>
               <div className="compose-row">
                 <label>密送</label>
-                <input value={form.bcc} onChange={(e) => patch({ bcc: e.target.value })} />
+                <AddressField
+                  name="bcc"
+                  value={form.bcc}
+                  onChange={(v) => patch({ bcc: v })}
+                  placeholder="密送"
+                />
               </div>
             </>
           )}

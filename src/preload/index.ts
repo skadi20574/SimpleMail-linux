@@ -82,6 +82,12 @@ const api = {
     onImportProgress: (cb: (p: ImportProgress) => void) => on('import:progress', cb),
     onExportProgress: (cb: (p: ExportProgress) => void) => on('export:progress', cb)
   },
+  contacts: {
+    list: (query?: string) => invoke('contacts:list', query),
+    remember: (entries: { email: string; name?: string }[]) => invoke('contacts:remember', entries),
+    remove: (id: number) => invoke('contacts:delete', id),
+    count: () => invoke('contacts:count')
+  },
   rules: {
     list: (accountId?: number) => invoke('rules:list', accountId),
     save: (draft: unknown) => invoke('rules:save', draft),
@@ -115,6 +121,9 @@ const api = {
     mailtoSetDefault: () => invoke('app:mailtoSetDefault'),
     /** 数据目录位置与迁移 */
     dataDir: () => invoke('app:dataDir'),
+    /** 存储占用与压缩 */
+    storage: () => invoke('app:storage'),
+    vacuum: () => invoke('app:vacuum'),
     dataDirCheck: (target: string) => invoke('app:dataDirCheck', target),
     dataDirMigrate: (target: string) => invoke('app:dataDirMigrate', target),
     dataDirRemoveOld: (dir: string) => invoke('app:dataDirRemoveOld', dir),

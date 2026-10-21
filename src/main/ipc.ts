@@ -53,6 +53,7 @@ import { openArchive, inspectArchive } from './foxmail/archive'
 import { importArchive } from './foxmail/importer'
 import { exportArchive } from './foxmail/exporter'
 import { mailtoStatus, setMailtoDefault } from './mailto'
+import { diag } from './diagnostics'
 import {
   checkDataDirTarget,
   dataDirInfo,
@@ -110,6 +111,28 @@ async function handleSyncStart(_e: Sender, accountId: number): Promise<unknown> 
 
 /* ─────────────────────────── 发信 ─────────────────────────── */
 
+/**
+ * 从 "张三 <a@b.com>, c@d.com" 这类字段里解析出地址并收进地址簿。
+ *
+ * 只取尖括号里的地址（有的话），没名字的用地址本身，名字留着以后显示。
+ */
+function rememberAddressesFromFields(...fields: string[]): void {
+  const entries: { email: string; name: string }[] = []
+  for (const field of fields) {
+    if (!field) continue
+    // 先按逗号/分号切，再逐段解析
+    for (const part of field.split(/[,;]/)) {
+      const raw = part.trim()
+      if (!raw || !raw.includes('@')) continue
+      const m = /^(.*?)<([^>]+)>$/.exec(raw)
+      const email = repo.extractEmail(m ? m[2] : raw)
+      const name = m ? m[1].trim().replace(/^["']|["']$/g, '') : ''
+      if (email.includes('@')) entries.push({ email, name })
+    }
+  }
+  if (entries.length) repo.rememberContacts(entries)
+}
+
 async function handleSend(_e: Sender, payload: ComposePayload): Promise<unknown> {
   const account = repo.getAccount(payload.accountId)
   if (!account) return { ok: false, error: '账户不存在' }
@@ -132,6 +155,9 @@ async function handleSend(_e: Sender, payload: ComposePayload): Promise<unknown>
   if (!outcome.ok || !outcome.raw) {
     return { ok: false, error: outcome.error ?? '发送失败' }
   }
+
+  // 发信成功 → 把收件人收进地址簿（下次写信可以直接联想）
+  rememberAddressesFromFields(payload.to, payload.cc, payload.bcc)
 
   // 落库到「已发送」
   const sentFolder = repo.findFolderByRole(account.id, 'sent')
@@ -671,6 +697,17 @@ export function registerIpc(): void {
   /** 对某封已存在的邮件立即套用规则（调试用） */
   ipcMain.handle('rules:applyToMail', (_e, mailId: number) => applyRulesToMail(mailId, true))
 
+  /* ── 地址簿 ── */
+  ipcMain.handle('contacts:list', (_e, query?: string) => repo.listContacts(query ?? ''))
+  ipcMain.handle('contacts:remember', (_e, entries: { email: string; name?: string }[]) =>
+    repo.rememberContacts(Array.isArray(entries) ? entries : [])
+  )
+  ipcMain.handle('contacts:delete', (_e, id: number) => {
+    repo.deleteContact(id)
+    return { ok: true }
+  })
+  ipcMain.handle('contacts:count', () => repo.contactCount())
+
   ipcMain.handle('archives:list', (_e, accountId?: number) => repo.listArchives(accountId))
   ipcMain.handle('archives:delete', (_e, id: number) => {
     repo.deleteArchive(id)
@@ -862,6 +899,119 @@ export function registerIpc(): void {
 
     return { ...counts, attachmentBytes, attachmentCount, dbBytes, version: app.getVersion() }
   })
+  /* ── 存储占用与压缩 ── */
+  ipcMain.handle('app:storage', () => {
+    const usage = repo.storageUsage()
+    // 附件目录实际占多少（按文件系统算，比 SUM(size) 更接近真实占用）
+    let attachmentBytes = 0
+    let attachmentFiles = 0
+    const walk = (dir: string): void => {
+      if (!existsSync(dir)) return
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name)
+        if (entry.isDirectory()) walk(full)
+        else {
+          try {
+            attachmentBytes += statSync(full).size
+            attachmentFiles++
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    }
+    walk(appPaths().attachments)
+
+    let dbBytes = 0
+    for (const suffix of ['', '-wal', '-shm']) {
+      const f = `${appPaths().database}${suffix}`
+      if (existsSync(f)) {
+        try {
+          dbBytes += statSync(f).size
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
+    return {
+      ...usage,
+      dbBytes,
+      attachmentBytes,
+      attachmentFiles,
+      dataDir: appPaths().userData
+    }
+  })
+
+  /**
+   * 压缩数据库（SQLite VACUUM）。
+   *
+   * 删邮件只是把页标成空闲，文件并不会变小；VACUUM 会整体重写一遍把空闲页
+   * 还给系统。代价是：**临时目录里要有一份等大的空间**，而且大库要跑一阵子。
+   * 所以界面上先显示「可回收 X MB」，由用户决定值不值得等。
+   *
+   * VACUUM 期间不能有其他连接在用同一个库，所以只在本进程里执行 ——
+   * 单实例锁保证了不会有第二个进程。
+   */
+  ipcMain.handle('app:vacuum', async (): Promise<unknown> => {
+    // 用「主文件 + WAL + SHM」的合计来衡量，因为用户看到的就是这些文件的总占用。
+    // 只量主文件会得出错误的结论：WAL 模式下 VACUUM 重建出来的库先进 WAL，
+    // 主文件要等 checkpoint 之后才收缩（实测 6020KB 的主文件在 VACUUM 后
+    // 依旧是 6020KB，而 WAL 涨到 6063KB；checkpoint 之后主文件才变成 8KB）。
+    const totalBytes = (): number => {
+      let n = 0
+      for (const suffix of ['', '-wal', '-shm']) {
+        const f = `${appPaths().database}${suffix}`
+        if (existsSync(f)) {
+          try {
+            n += statSync(f).size
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+      return n
+    }
+
+    const before = totalBytes()
+    const t0 = Date.now()
+    try {
+      const db = getDb()
+      db.exec('VACUUM')
+      /**
+       * ⚠️ 必须跟一次 checkpoint。
+       *
+       * 库是 WAL 模式的：VACUUM 把整个库重写进 WAL，主文件这时**不会变小**。
+       * 不 checkpoint 的话，用户点完「压缩」看到的是"一点没省"，
+       * 而 WAL 反而撑得很大 —— 功能看起来是坏的。
+       */
+      try {
+        db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+      } catch {
+        /* 不是 WAL 模式或没有 WAL 时忽略 */
+      }
+      // 让查询计划统计信息也刷新一下（很便宜）
+      try {
+        db.exec('PRAGMA optimize')
+      } catch {
+        /* 老版本没有也正常 */
+      }
+      const after = totalBytes()
+      diag(`[压缩] ${(before / 1048576).toFixed(1)}MB → ${(after / 1048576).toFixed(1)}MB`)
+      return {
+        ok: true,
+        beforeBytes: before,
+        afterBytes: after,
+        savedBytes: Math.max(0, before - after),
+        ms: Date.now() - t0
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      diag(`[压缩] 失败：${msg}`)
+      return { ok: false, error: msg }
+    }
+  })
+
   ipcMain.handle('app:openPath', async (_e, path: string) => {
     if (!existsSync(path)) return { ok: false, error: '路径不存在' }
     const err = await shell.openPath(path)
