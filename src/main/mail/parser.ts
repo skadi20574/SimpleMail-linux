@@ -8,6 +8,7 @@
  *  2. **裸 8bit 头部修复**：头部若含 0x80 以上字节且不是合法 UTF-8，会先按 GB18030
  *     转成 UTF-8 再交给 mailparser，否则邮件主题会变成问号。
  */
+import { hasRealAttachments, type AttachmentLike } from '@shared/attachments'
 
 import { simpleParser } from 'mailparser'
 import iconv from 'iconv-lite'
@@ -348,6 +349,6 @@ export function buildRfc822(input: {
  * 于是「只有签名 logo 这类内嵌图」的邮件在列表里显示了回形针图标，
  * 点开却一个附件都没有。列表与详情页必须用同一个判定。
  */
-export function hasVisibleAttachments(atts: readonly { isInline?: boolean }[]): boolean {
-  return atts.some((a) => !a.isInline)
+export function hasVisibleAttachments(atts: readonly AttachmentLike[]): boolean {
+  return hasRealAttachments(atts)
 }

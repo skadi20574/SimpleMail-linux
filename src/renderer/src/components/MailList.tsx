@@ -1,6 +1,7 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import type { MailSummary } from '../api'
 import { formatListDate, highlightParts } from '../utils'
+import { groupByThread } from '@shared/thread'
 import Icon from './Icon'
 
 interface Props {
@@ -18,6 +19,9 @@ interface Props {
   orderDir: 'asc' | 'desc'
   /** 是否处于搜索状态：只有搜索时才有「相关度」这一维 */
   isSearching: boolean
+  /** 是否把同一主题的回复线索折叠成一行 */
+  threadCollapse: boolean
+  onToggleThreadCollapse: () => void
   onChangeOrder: (by: 'relevance' | 'date' | 'subject' | 'from', dir: 'asc' | 'desc') => void
   /** 单击行；带上事件以便识别 Ctrl / Shift 组合键 */
   onRowClick: (mail: MailSummary, event: React.MouseEvent) => void
@@ -27,7 +31,6 @@ interface Props {
   onRowContextMenu: (mail: MailSummary, event: React.MouseEvent) => void
   /** 开始拖拽整行（把它拖到左侧文件夹上即可移动） */
   onRowDragStart: (mail: MailSummary) => void
-  /** 点击行首复选框：单独切换一封 */
   /** 表头复选框：全选 / 取消全选 */
   onSelectAll: (select: boolean) => void
   onLoadMore: () => void
@@ -53,6 +56,26 @@ function Hl({ text, terms }: { text: string; terms: string[] }): JSX.Element {
 export default function MailList(props: Props): JSX.Element {
   const { mails, total, activeId, selectedIds } = props
 
+  /**
+   * 哪些线程被用户点开了。存线程键而不是邮件 id：重新加载、切换排序之后
+   * 键还是同一个，展开状态不会莫名其妙丢掉。
+   */
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+
+  const groups = useMemo(
+    () => groupByThread(mails, props.threadCollapse),
+    [mails, props.threadCollapse]
+  )
+
+  const toggleThread = (key: string): void => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
   const allSelected = mails.length > 0 && mails.every((m) => selectedIds.has(m.id))
   const someSelected = !allSelected && mails.some((m) => selectedIds.has(m.id))
 
@@ -75,6 +98,124 @@ export default function MailList(props: Props): JSX.Element {
     return props.orderDir === 'desc' ? ' ↓' : ' ↑'
   }
 
+  /**
+   * 渲染一行。
+   * @param child 是否是展开出来的线程成员（缩进显示）
+   * @param thread 线程信息；为 null 表示这一行不是折叠线索的头部
+   */
+  const renderRow = (
+    m: MailSummary,
+    child: boolean,
+    thread: { open: boolean; count: number; toggle: () => void } | null = null,
+    /**
+     * 折叠状态下「整条线索里有没有回复过/转发过」。
+     *
+     * 线索收起时只显示最新那一封，如果被回复的是里面更早的一封，
+     * 行尾就什么都不显示 —— 用户会以为这几封都没处理过。
+     * 所以组头把整组的标记或起来显示。
+     */
+    groupMarks: { replied: boolean; forwarded: boolean } | null = null
+  ): JSX.Element => {
+    const replied = m.replied || Boolean(groupMarks?.replied)
+    const forwarded = m.forwarded || Boolean(groupMarks?.forwarded)
+    const selected = selectedIds.has(m.id)
+    const active = activeId === m.id
+    return (
+      <div
+        key={m.id}
+        data-mail-id={m.id}
+        className={`mailrow${m.unread ? ' unread' : ' read'}${selected ? ' selected' : ''}${
+          active ? ' active' : ''
+        }${child ? ' child' : ''}`}
+        // 可拖到左侧文件夹上完成移动
+        draggable
+        onDragStart={(e) => {
+          // 不设置数据的话 Chromium 不会启动拖拽
+          e.dataTransfer.setData('text/plain', m.subject || '(无主题)')
+          e.dataTransfer.effectAllowed = 'move'
+          props.onRowDragStart(m)
+        }}
+        onClick={(e) => props.onRowClick(m, e)}
+        onDoubleClick={() => props.onRowDoubleClick(m)}
+        onContextMenu={(e) => props.onRowContextMenu(m, e)}
+      >
+        <span className="rowlead">
+          {/*
+            行首三格：[已读状态] [星标] [附件]
+            三格各自固定占位、互不顶替 —— 之前蓝点和星标共用一个格子，
+            有星标就不显示蓝点，未读的星标邮件看起来和已读的一样。
+
+            为什么第三格不再是复选框：选中状态本来就有整行高亮，
+            再放个勾选框是重复的。改成附件标记后，这一格才真正有用
+            —— 有附件才有曲别针，没有就是空的。
+            多选仍然可用：Ctrl/Cmd 单击逐封加选，Shift 单击选一段，
+            表头那个勾选框仍然是全选。
+          */}
+          {/*
+            未读 = 绿色圆点，已读 = 小对勾。
+            两种状态**都有**可见标记，一眼就能区分开，
+            而不是「未读有点、已读什么都没有」。
+          */}
+          <span className="slot slot-state" title={m.unread ? '未读' : '已读'}>
+            {m.unread ? (
+              <span className="unread-dot" />
+            ) : (
+              <Icon name="check" size={11} className="read-check" />
+            )}
+          </span>
+          <span className="slot slot-star" title={m.flagged ? '已加星标' : ''}>
+            {m.flagged ? <Icon name="star" size={11} className="star-on" /> : null}
+          </span>
+          <span className="slot slot-attach" title={m.hasAttachments ? '含附件' : ''}>
+            {m.hasAttachments ? <Icon name="paperclip" size={11} /> : null}
+          </span>
+        </span>
+        <span className="from" title={m.fromAddr}>
+          <Hl text={m.fromName || m.fromAddr || '(无发件人)'} terms={props.searchTerms} />
+        </span>
+        <span className="subject" title={m.subject}>
+          {/*
+            线程折叠标记放在主题列的最前面（而不是挤进行首那三格）。
+            行首三格宽度是固定的，塞进去会顶掉未读/星标/附件标记。
+          */}
+          {thread && (
+            <button
+              className={`threadtoggle${thread.open ? ' open' : ''}`}
+              title={
+                thread.open
+                  ? `收起这 ${thread.count} 封同主题邮件`
+                  : `展开这 ${thread.count} 封同主题邮件`
+              }
+              onClick={(e) => {
+                // 不能让点击冒泡成「选中这封邮件」
+                e.stopPropagation()
+                thread.toggle()
+              }}
+            >
+              <span className="caret">{thread.open ? '▾' : '▸'}</span>
+              <span className="tcount">{thread.count}</span>
+            </button>
+          )}
+          <span className="subtext">
+            <Hl text={m.subject || '(无主题)'} terms={props.searchTerms} />
+          </span>
+          {props.showAccount && m.folderName && <span className="tag">{m.folderName}</span>}
+        </span>
+        {/* 已回复 / 已转发：给个箭头，一眼看出这封我处理过没有 */}
+        {(replied || forwarded) && (
+          <span
+            className="rowmark"
+            title={replied ? '已回复' : '已转发'}
+            aria-label={replied ? '已回复' : '已转发'}
+          >
+            <Icon name={replied ? 'reply' : 'forward'} size={11} />
+          </span>
+        )}
+        <span className="date">{formatListDate(m.date)}</span>
+      </div>
+    )
+  }
+
   return (
     <div className="listwrap" style={{ flex: 1 }}>
       <div className="listhead">
@@ -95,6 +236,17 @@ export default function MailList(props: Props): JSX.Element {
         </span>
         <span className="spacer" />
         {props.loading && <span className="busy dark" />}
+        <button
+          className={`iconbtn${props.threadCollapse ? ' on' : ''}`}
+          title={
+            props.threadCollapse
+              ? '已把同一主题的回复线索折叠成一行，点击改为平铺显示'
+              : '把同一主题的回复线索折叠成一行'
+          }
+          onClick={props.onToggleThreadCollapse}
+        >
+          线索{props.threadCollapse ? ' ✓' : ''}
+        </button>
         {props.isSearching && (
           <button
             className="iconbtn"
@@ -122,67 +274,26 @@ export default function MailList(props: Props): JSX.Element {
           if (el.scrollTop + el.clientHeight >= el.scrollHeight - 120) props.onLoadMore()
         }}
       >
-        {mails.map((m) => {
-          const selected = selectedIds.has(m.id)
-          const active = activeId === m.id
+        {groups.map((g) => {
+          const n = g.rest.length
+          // 键盘上下移动落到折起来的那封上时，自动把这条线索展开，
+          // 否则光标会停在一个看不见的行上。
+          const autoOpen = g.rest.some((m) => m.id === activeId)
+          const open = n === 0 || expanded.has(g.key) || autoOpen
           return (
-            <div
-              key={m.id}
-              data-mail-id={m.id}
-              className={`mailrow${m.unread ? ' unread' : ' read'}${selected ? ' selected' : ''}${
-                active ? ' active' : ''
-              }`}
-              // 可拖到左侧文件夹上完成移动
-              draggable
-              onDragStart={(e) => {
-                // 不设置数据的话 Chromium 不会启动拖拽
-                e.dataTransfer.setData('text/plain', m.subject || '(无主题)')
-                e.dataTransfer.effectAllowed = 'move'
-                props.onRowDragStart(m)
-              }}
-              onClick={(e) => props.onRowClick(m, e)}
-              onDoubleClick={() => props.onRowDoubleClick(m)}
-              onContextMenu={(e) => props.onRowContextMenu(m, e)}
-            >
-              <span className="rowlead">
-                {/*
-                  行首三格：[已读状态] [星标] [附件]
-                  三格各自固定占位、互不顶替 —— 之前蓝点和星标共用一个格子，
-                  有星标就不显示蓝点，未读的星标邮件看起来和已读的一样。
-
-                  为什么第三格不再是复选框：选中状态本来就有整行高亮，
-                  再放个勾选框是重复的。改成附件标记后，这一格才真正有用
-                  —— 有附件才有曲别针，没有就是空的。
-                  多选仍然可用：Ctrl/Cmd 单击逐封加选，Shift 单击选一段，
-                  表头那个勾选框仍然是全选。
-                */}
-                {/*
-                  未读 = 绿色圆点，已读 = 小对勾。
-                  两种状态**都有**可见标记，一眼就能区分开，
-                  而不是「未读有点、已读什么都没有」。
-                */}
-                <span className="slot slot-state" title={m.unread ? '未读' : '已读'}>
-                  {m.unread ? (
-                    <span className="unread-dot" />
-                  ) : (
-                    <Icon name="check" size={11} className="read-check" />
-                  )}
-                </span>
-                <span className="slot slot-star" title={m.flagged ? '已加星标' : ''}>
-                  {m.flagged ? <Icon name="star" size={11} className="star-on" /> : null}
-                </span>
-                <span className="slot slot-attach" title={m.hasAttachments ? '含附件' : ''}>
-                  {m.hasAttachments ? <Icon name="paperclip" size={11} /> : null}
-                </span>
-              </span>
-              <span className="from" title={m.fromAddr}>
-                <Hl text={m.fromName || m.fromAddr || '(无发件人)'} terms={props.searchTerms} />
-              </span>
-              <span className="subject" title={m.subject}>
-                <Hl text={m.subject || '(无主题)'} terms={props.searchTerms} />
-                {props.showAccount && m.folderName && <span className="tag">{m.folderName}</span>}
-              </span>
-              <span className="date">{formatListDate(m.date)}</span>
+            <div key={g.head.id} className="threadgroup">
+              {renderRow(
+                g.head,
+                false,
+                n > 0 ? { open, count: n + 1, toggle: () => toggleThread(g.key) } : null,
+                n > 0
+                  ? {
+                      replied: g.rest.some((m) => m.replied),
+                      forwarded: g.rest.some((m) => m.forwarded)
+                    }
+                  : null
+              )}
+              {open && g.rest.map((m) => renderRow(m, true))}
             </div>
           )
         })}

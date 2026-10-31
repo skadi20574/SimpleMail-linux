@@ -71,6 +71,20 @@ function attachScreenshotHook(win: BrowserWindow): void {
                 (() => {
                   const el = document.querySelector(${JSON.stringify(selector)})
                   if (!el) return 'missing'
+                  // 富文本正文区是 contenteditable，没有 .value —— 直接写 value
+                  // 会抛 Illegal invocation。对它走 execCommand 插字，
+                  // 这样才是「真的在编辑器里打字」，事件和状态都会跟着走。
+                  if (el.isContentEditable) {
+                    el.focus()
+                    const range = document.createRange()
+                    range.selectNodeContents(el)
+                    range.collapse(false)
+                    const sel = window.getSelection()
+                    sel.removeAllRanges()
+                    sel.addRange(range)
+                    document.execCommand('insertText', false, ${JSON.stringify(value)})
+                    return 'ok'
+                  }
                   const setter = Object.getOwnPropertyDescriptor(
                     window.HTMLInputElement.prototype, 'value'
                   ).set
@@ -250,6 +264,31 @@ function attachScreenshotHook(win: BrowserWindow): void {
                     .slice(0, 6).map(el => (el.textContent || '').trim()),
                   listTitle: (document.querySelector('.listhead .title')?.textContent || '').trim(),
                   listCount: (document.querySelector('.listhead .count')?.textContent || '').trim(),
+                  // 当前列表里到底是哪几封（排查「界面条数和库里条数不一样」）
+                  listIds: [...document.querySelectorAll('.mailrow')]
+                    .map(r => r.getAttribute('data-mail-id')),
+                  // ── 线程折叠（1.2.6）──
+                  // 折叠标记的数量与文字；展开后子行应该出现在列表里
+                  threadBadges: [...document.querySelectorAll('.mailrow .threadtoggle')]
+                    .map(el => (el.textContent || '').trim()),
+                  threadOpen: [...document.querySelectorAll('.mailrow .threadtoggle.open')].length,
+                  childRows: document.querySelectorAll('.mailrow.child').length,
+                  // 已回复 / 已转发的标记
+                  rowMarks: [...document.querySelectorAll('.mailrow .rowmark')]
+                    .map(el => el.getAttribute('title') || ''),
+                  // ── 富文本写信（1.2.6）──
+                  richEditor: document.querySelector('.rtbody')
+                    ? {
+                        toolbarButtons: document.querySelectorAll('.rttoolbar .rtbtn').length,
+                        selects: document.querySelectorAll('.rttoolbar .rtsel').length,
+                        editable: document.querySelector('.rtbody').isContentEditable,
+                        height: Math.round(document.querySelector('.rtbody').getBoundingClientRect().height),
+                        html: (document.querySelector('.rtbody').innerHTML || '').slice(0, 160)
+                      }
+                    : null,
+                  composerMode: [...document.querySelectorAll('.compose-row .iconbtn')]
+                    .map(el => (el.textContent || '').trim())
+                    .filter(t => t === '富文本' || t === '纯文本'),
                   // ── 写信窗口（验证 mailto: 链接有没有正确填进来）──
                   // 按「标签 → 输入框」取名，比按序号稳妥（抄送/密送是条件渲染的）
                   composer: document.querySelector('.composer') ? '开' : '关',
@@ -272,6 +311,178 @@ function attachScreenshotHook(win: BrowserWindow): void {
             } catch (err) {
               console.error('[SimpleMail] 诊断失败：', err)
             }
+          }
+
+          /**
+           * 开发辅助：SIMPLEMAIL_SHOT_RICHTEST=1 时跑一遍富文本编辑器的格式命令。
+           *
+           * 为什么需要它：工具栏的「加粗/字号/颜色」在截图里看起来一模一样，
+           * 命令没生效也只是「点了没反应」，肉眼和截图都发现不了。
+           * 靠它抓到过一个真 bug —— 工具栏曾经无条件恢复缓存的选区，而缓存只在
+           * selectionchange 里更新（那个事件是异步派发的），于是「选好字立刻点 B」
+           * 会把格式加到上一次的选区上。
+           *
+           * 注意：下面的 select 是用**直接赋值 value** 驱动的，不能走
+           * Object.getOwnPropertyDescriptor(...).set —— 那样会绕过 React 的值追踪，
+           * onChange 不会触发，测出来会是假失败。
+           */
+          if (process.env.SIMPLEMAIL_SHOT_RICHTEST) {
+            const rich = await win.webContents.executeJavaScript(`
+              (async () => {
+               try {
+                const body = document.querySelector('.rtbody')
+                if (!body) return { error: '没有富文本编辑器（写信窗口没打开？）' }
+                const tick = () => new Promise(r => setTimeout(r, 120))
+                const pass = {}
+
+                // 选中 body 里第一处出现的某个词
+                const pick = (word) => {
+                  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT)
+                  let node
+                  while ((node = walker.nextNode())) {
+                    const i = node.nodeValue.indexOf(word)
+                    if (i === -1) continue
+                    const r = document.createRange()
+                    r.setStart(node, i)
+                    r.setEnd(node, i + word.length)
+                    const sel = window.getSelection()
+                    sel.removeAllRanges()
+                    sel.addRange(r)
+                    return true
+                  }
+                  return false
+                }
+                const click = (el) => {
+                  if (!el) return false
+                  // 先 mousedown 再 click：与真实点击的顺序一致，
+                  // 工具栏按钮正是在 mousedown 里 preventDefault 保住选区的
+                  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
+                  el.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+                  return true
+                }
+                const btn = (cls) => document.querySelector('.rttoolbar .rtbtn' + cls)
+                const btnText = (t) => [...document.querySelectorAll('.rttoolbar .rtbtn')]
+                  .find(b => b.textContent === t)
+
+                // 粘贴清洗：外部 HTML 里的脚本、iframe、远程图片都不能进正文。
+                // 这是「写信」里唯一一处会把外来内容搬进邮件的地方，必须验。
+                body.innerHTML = '<div>粘贴起点</div>'
+                pick('粘贴起点')
+                let pasted = ''
+                try {
+                  const dt = new DataTransfer()
+                  dt.setData(
+                    'text/html',
+                    '<b>粗体</b><script>window.__pwned=1</script>' +
+                      '<iframe src="https://evil.test"></iframe>' +
+                      '<img src="https://evil.test/track.png">' +
+                      '<a href="javascript:alert(1)">坏链接</a>' +
+                      '<a href="https://ok.test/x">好链接</a>'
+                  )
+                  dt.setData('text/plain', '粗体')
+                  // 派发一个真的 paste 事件（带 clipboardData）：
+                  // 这样走的就是用户按 Ctrl+V 时那条代码
+                  const ev = new ClipboardEvent('paste', { bubbles: true, cancelable: true })
+                  Object.defineProperty(ev, 'clipboardData', { value: dt })
+                  body.dispatchEvent(ev)
+                  await tick()
+                  pasted = body.innerHTML
+                  pass.粘贴事件生效 = pasted.length > 0
+                } catch (err) {
+                  pass.粘贴测试出错 = false
+                  pasted = 'ERROR: ' + String(err)
+                }
+                const lower = pasted.toLowerCase()
+                pass.粘贴保留粗体 = pasted.includes('<b>')
+                pass.粘贴去掉脚本 = !lower.includes('script') && !window.__pwned
+                pass.粘贴去掉iframe = !lower.includes('iframe')
+                pass.粘贴去掉远程图片 = !lower.includes('<img')
+                pass.粘贴去掉javascript链接 = !lower.includes('javascript:')
+                pass.粘贴保留正常链接 = pasted.includes('href="https://ok.test/x"')
+                body.innerHTML = '<div>甲乙丙丁戊</div>'
+                pick('乙'); pass.粗体 = click(btn('.b'))
+                pick('丙'); pass.斜体 = click(btn('.i'))
+                pick('甲'); pass.下划线 = click(btn('.u'))
+                pick('丁')
+                const sizeSel = document.querySelectorAll('.rttoolbar .rtsel')[0]
+                sizeSel.value = '6'
+                sizeSel.dispatchEvent(new Event('change', { bubbles: true }))
+                await tick()
+                pick('戊')
+                const colorSel = document.querySelectorAll('.rttoolbar .rtsel')[1]
+                colorSel.value = '#1e8e3e'
+                colorSel.dispatchEvent(new Event('change', { bubbles: true }))
+                await tick()
+                const formatted = body.innerHTML
+                pass.粗体生效 = formatted.includes('font-weight: bold')
+                pass.斜体生效 = formatted.includes('font-style: italic')
+                pass.下划线生效 = formatted.includes('text-decoration-line: underline')
+                pass.字号生效 = formatted.includes('font-size:')
+                pass.颜色生效 = formatted.includes('color: rgb(30, 142, 62)')
+                pass.保留正文 = body.innerText.split(/\\s/).join('').includes('甲乙丙丁戊')
+
+                body.innerHTML = '<div>第一项</div>'
+                pick('第一项'); pass.列表 = click(btnText('• 列表'))
+                await tick()
+                pass.列表生效 = body.innerHTML.includes('<li>')
+
+                body.innerHTML = '<div><span style="font-weight:bold">要清掉的粗体</span></div>'
+                pick('要清掉的粗体'); pass.清除格式 = click(btnText('清除格式'))
+                await tick()
+                pass.清除格式生效 = !body.innerHTML.includes('font-weight')
+
+                body.innerHTML = '<div>点这里打开官网</div>'
+                pick('这里')
+                click(btnText('链接'))
+                await tick()
+                const urlInput = document.querySelector('.rtlink input')
+                pass.链接面板 = Boolean(urlInput)
+                if (urlInput) {
+                  const setter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value'
+                  ).set
+                  setter.call(urlInput, 'example.com/page')
+                  urlInput.dispatchEvent(new Event('input', { bubbles: true }))
+                  await tick()
+                  click(document.querySelector('.rtlink .btn.primary'))
+                  await tick()
+                }
+                pass.链接生效 = body.innerHTML.includes('href="https://example.com/page"')
+                pass.链接面板已关 = !document.querySelector('.rtlink')
+
+                // 模式往返：纯文本里改过的字不能在切回富文本时被旧 HTML 顶掉
+                const modeBtn = () => [...document.querySelectorAll('.compose-row .iconbtn')]
+                  .find(b => b.textContent === '富文本' || b.textContent === '纯文本')
+                click(modeBtn())
+                await tick()
+                const ta = document.querySelector('.composer textarea')
+                pass.切到纯文本 = Boolean(ta)
+                if (ta) {
+                  const setter = Object.getOwnPropertyDescriptor(
+                    window.HTMLTextAreaElement.prototype, 'value'
+                  ).set
+                  setter.call(ta, '纯文本里改过的一句话')
+                  ta.dispatchEvent(new Event('input', { bubbles: true }))
+                  await tick()
+                }
+                click(modeBtn())
+                await tick()
+                const back = document.querySelector('.rtbody')
+                pass.切回富文本 = Boolean(back)
+                pass.纯文本编辑没丢 = Boolean(back && back.textContent.includes('纯文本里改过的一句话'))
+
+                return pass
+               } catch (err) {
+                 return { 脚本出错: String((err && err.stack) || err) }
+               }
+              })()
+            `)
+            const failed = Object.entries(rich).filter(([, v]) => v !== true)
+            console.log(
+              '[SimpleMail] 富文本自检：',
+              failed.length === 0 ? '全部通过' : `失败 ${failed.map(([k]) => k).join('、')}`,
+              JSON.stringify(rich)
+            )
           }
 
           const image = await win.webContents.capturePage()

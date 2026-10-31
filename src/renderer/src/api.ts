@@ -104,6 +104,9 @@ interface RawApi {
     remove(id: number): Promise<{ ok: boolean }>
     send(payload: ComposePayload): Promise<{ ok: boolean; error?: string; mailId?: number }>
     saveDraft(payload: ComposePayload): Promise<{ ok: boolean; error?: string; mailId?: number }>
+    /** 记下「这封我回复/转发过」，列表上显示对应图标 */
+    markReplied(id: number): Promise<{ ok: boolean }>
+    markForwarded(id: number): Promise<{ ok: boolean }>
   }
   attachments: {
     saveAs(id: number): Promise<{ ok: boolean; path?: string; error?: string; canceled?: boolean }>

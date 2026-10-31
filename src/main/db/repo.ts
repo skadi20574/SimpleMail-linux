@@ -517,6 +517,8 @@ interface MailRow {
   unread: number
   flagged: number
   has_attachments: number
+  replied_at?: number | null
+  forwarded_at?: number | null
   source: string
   archive_tag: string | null
   rules_fired?: string | null
@@ -541,6 +543,8 @@ function mapSummary(row: MailRow): MailSummary {
     unread: toBool(row.unread),
     flagged: toBool(row.flagged),
     hasAttachments: toBool(row.has_attachments),
+    replied: row.replied_at != null,
+    forwarded: row.forwarded_at != null,
     size: row.size,
     source: row.source as MailSource,
     archiveTag: row.archive_tag,
@@ -551,7 +555,8 @@ function mapSummary(row: MailRow): MailSummary {
 
 const SUMMARY_COLS = `m.id, m.account_id, m.folder_id, m.uid, m.message_id, m.subject,
   m.from_name, m.from_addr, m.to_text, m.date, m.snippet, m.unread, m.flagged,
-  m.has_attachments, m.size, m.source, m.archive_tag, f.name AS folder_name,
+  m.has_attachments, m.size, m.source, m.archive_tag,
+  m.replied_at, m.forwarded_at, f.name AS folder_name,
   a.email AS account_email`
 
 const DETAIL_COLS = `${SUMMARY_COLS}, m.cc_text, m.bcc_text, m.reply_to,
@@ -1215,6 +1220,21 @@ export function listMailsForRuleScan(accountId: number | null, limit: number): M
  * 还留在文件里没还给系统，`VACUUM` 就是把它们收回去。界面上要显示这个数字，
  * 否则用户不知道"压缩"到底能省多少、值不值得等。
  */
+/* ─────────────────────── 回复 / 转发标记 ─────────────────────── */
+
+/** 记下「这封邮件被回复过」；already 为 true 时不覆盖首次时间 */
+export function markMailReplied(mailId: number): void {
+  getDb()
+    .prepare('UPDATE mails SET replied_at = COALESCE(replied_at, ?) WHERE id = ?')
+    .run(Date.now(), mailId)
+}
+
+export function markMailForwarded(mailId: number): void {
+  getDb()
+    .prepare('UPDATE mails SET forwarded_at = COALESCE(forwarded_at, ?) WHERE id = ?')
+    .run(Date.now(), mailId)
+}
+
 /* ─────────────────────────────── 地址簿 ─────────────────────────────── */
 
 /**

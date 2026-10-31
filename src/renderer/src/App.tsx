@@ -25,7 +25,12 @@ import { applyTheme, watchSystemTheme } from './theme'
 import Sidebar from './components/Sidebar'
 import MailList from './components/MailList'
 import MailView from './components/MailView'
-import Composer, { buildReplyInit, type ComposeInit } from './components/Composer'
+import Composer, {
+  buildReplyInit,
+  signatureHtml,
+  type ComposeInit
+} from './components/Composer'
+import { plainToHtml } from './richtext'
 import AccountDialog from './components/AccountDialog'
 import SettingsDialog from './components/SettingsDialog'
 import ArchiveDialog from './components/ArchiveDialog'
@@ -43,6 +48,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
   shortcuts: {},
   autoMarkRead: true,
+  threadCollapse: true,
   autoSyncOnStart: true,
   autoSyncEnabled: true,
   syncIntervalMinutes: 5,
@@ -245,7 +251,12 @@ export default function App(): JSX.Element {
     const t = window.setTimeout(() => {
       const next = compactCriteria({ ...searchFields, all: searchInput.trim() })
       setCriteria(next)
-      if (hasAnyCriteria(next)) setOrderBy('relevance')
+      // 搜索结果默认按时间（最新在前）。相关度排序仍然可以手动点出来
+      // （列表头上那个「相关度」按钮），但默认给用户最符合直觉的时间顺序。
+      if (hasAnyCriteria(next)) {
+        setOrderBy('date')
+        setOrderDir('desc')
+      }
     }, 320)
     return () => window.clearTimeout(t)
   }, [searchInput, searchFields])
@@ -278,6 +289,10 @@ export default function App(): JSX.Element {
         subject: req.subject,
         // 链接里带了正文就用链接的；没带才补上签名
         body: req.body || sig,
+        // 富文本模式下用带样式的签名块；链接带的正文按纯文本转义后放进正文
+        html: req.body
+          ? plainToHtml(req.body)
+          : signatureHtml(account.signature ?? ''),
         // 右键文件 →「邮件发送」时，附件是主进程校验过存在性的
         attachments: delivery.attachments.map((a) => ({
           path: a.path,
@@ -540,6 +555,7 @@ export default function App(): JSX.Element {
       bcc: '',
       subject: '',
       body: sig,
+      html: signatureHtml(account.signature ?? ''),
       attachments: []
     })
   }
@@ -555,6 +571,8 @@ export default function App(): JSX.Element {
       bcc: full.bccText,
       subject: full.subject === '(无主题)' ? '' : full.subject,
       body: full.bodyText,
+      // 草稿如果是富文本写的，要把 HTML 一起带回来，否则重新打开排版就没了
+      html: full.bodyHtml,
       attachments: full.attachments
         .filter((a) => a.storedPath)
         .map((a) => ({ path: a.storedPath as string, filename: a.filename, contentType: a.contentType }))
@@ -564,7 +582,7 @@ export default function App(): JSX.Element {
   const reply = (mail: MailDetail, mode: 'reply' | 'replyAll' | 'forward'): void => {
     const account = accounts.find((a) => a.id === mail.accountId) ?? accounts[0]
     if (!account) return
-    const init = buildReplyInit(account.id, mail, mode, account.signature)
+    const init = buildReplyInit(account.id, mail, mode, account.signature, account.email)
     setComposer(init)
 
     // 回复时把对方地址收进地址簿（用户明确要的行为）：
@@ -585,6 +603,14 @@ export default function App(): JSX.Element {
       }
     }
     if (entries.length) void api.contacts.remember(entries).catch(() => undefined)
+
+    // 记下「这封我回复过 / 转发过」，列表上会显示对应箭头图标。
+    // 失败无所谓，只是少一个提示图标。
+    if (mode === 'forward') {
+      void api.mails.markForwarded(mail.id).catch(() => undefined)
+    } else {
+      void api.mails.markReplied(mail.id).catch(() => undefined)
+    }
   }
 
   /* ─────────────── 多选 ─────────────── */
@@ -1425,6 +1451,13 @@ export default function App(): JSX.Element {
                     setOrderDir(dir)
                   }}
                   isSearching={searching}
+                  threadCollapse={settings.threadCollapse}
+                  onToggleThreadCollapse={() => {
+                    const next = !settings.threadCollapse
+                    // 先改本地状态，列表立刻反应；落盘是后台的事
+                    setSettings((s) => ({ ...s, threadCollapse: next }))
+                    void api.settings.set({ threadCollapse: next }).then(setSettings)
+                  }}
                   onRowClick={handleRowClick}
                   onRowDoubleClick={handleRowDoubleClick}
                   onRowContextMenu={(m, e) => void handleRowContextMenu(m, e)}

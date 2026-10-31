@@ -28,6 +28,9 @@ import { closeDb, getDb } from './db'
 import { openDatabase } from './db/sqlite'
 import { initSchema, migrate, SCHEMA_VERSION } from './db/schema'
 import { hasVisibleAttachments } from './mail/parser'
+import { hasRealAttachments, isRealAttachment } from '@shared/attachments'
+import { addressOf, excludeAddress, splitAddressList } from '@shared/address'
+import { groupByThread, threadKey } from '@shared/thread'
 import { nextAfterDelete } from '@shared/mail-nav'
 import { checkDataDirTarget, legacyDataDir } from './data-dir'
 import * as repo from './db/repo'
@@ -2324,6 +2327,60 @@ Subject: 导出删除 ${i}`,
       js.includes('searchCriteria'),
       js.includes('searchCriteria') ? '' : '产物里找不到 searchCriteria，界面可能没接上多字段搜索'
     )
+
+    /* ── 1.2.6 新增的界面部件 ── */
+
+    // 线程折叠标记：样式没进产物的话，那个「▸ 3」会是一个没有形状的裸字符
+    const threadToggleRule = ruleOf('.mailrow .threadtoggle')
+    check('线程折叠标记有样式', threadToggleRule !== null, threadToggleRule ?? '找不到 .threadtoggle')
+    check(
+      '线程折叠标记是可用尺寸的按钮（不是 0 尺寸）',
+      Boolean(threadToggleRule && /padding:/.test(threadToggleRule) && /border-radius:/.test(threadToggleRule)),
+      threadToggleRule ?? ''
+    )
+    check('展开出来的线程成员有缩进样式', ruleOf('.mailrow.child') !== null)
+    check(
+      '主题列是 flex（否则折叠标记会被省略号吃掉）',
+      Boolean(ruleOf('.mailrow .subject')?.includes('display: flex')),
+      ruleOf('.mailrow .subject') ?? ''
+    )
+
+    // 已回复/已转发的标记：和日期分开占位，不能被日期顶掉
+    check('已回复/已转发标记有样式', ruleOf('.mailrow .rowmark') !== null)
+
+    // 富文本编辑器
+    check('富文本工具栏有样式', ruleOf('.rttoolbar') !== null)
+    check('富文本正文区有样式', ruleOf('.rtbody') !== null)
+    check(
+      '富文本正文区可滚动（内容长了不会把对话框撑破）',
+      Boolean(ruleOf('.rtbody')?.includes('overflow-y: auto')),
+      ruleOf('.rtbody') ?? ''
+    )
+    check(
+      '富文本空正文有占位提示',
+      css.includes(".rtbody[data-empty='1']:before") || css.includes('.rtbody[data-empty="1"]:before')
+    )
+    check('引用块在编辑器里有样式', ruleOf('.rtbody blockquote') !== null)
+    check(
+      '纯文本模式下正文框的样式没有被富文本改造影响',
+      ruleOf('.compose-body textarea') !== null
+    )
+
+    // 富文本产物里必须真的用 contenteditable 且自己接管了粘贴。
+    // 产物是压缩过的、函数名会被改写，所以这里只能找**字符串字面量**和
+    // 对象属性名（这两个压缩器不会动）：contentEditable 是 JSX 属性名，
+    // insertHTML 是 execCommand 的命令名 —— 只有自己拼 HTML 再插入才会用到。
+    check('渲染产物里有 contenteditable 正文区', js.includes('contentEditable'))
+    check(
+      '渲染产物里自己接管了粘贴（insertHTML）',
+      js.includes('insertHTML'),
+      js.includes('insertHTML') ? '' : '产物里找不到 insertHTML，外部 HTML 可能被原样塞进邮件'
+    )
+    check(
+      '渲染产物里带上了线程折叠开关（threadCollapse）',
+      js.includes('threadCollapse'),
+      js.includes('threadCollapse') ? '' : '界面没接上 threadCollapse 设置'
+    )
   }
 
 
@@ -2635,22 +2692,31 @@ Subject: 导出删除 ${i}`,
   // 在列表里显示了回形针图标，点开却一个附件都没有。
   section('25-pre. 附件标记（内嵌图片不算附件）')
 
+  // 注意：这里原来用「只有 isInline 字段、没有文件名」的假数据断言「算附件」。
+  // 1.2.6 把口径补全成 shared/attachments.ts 里的 isRealAttachment ——
+  // 除了排除内嵌图，还要排除没有可用文件名的部件（Foxmail 的 foxmailicon
+  // 内部部件、unnamed 占位名等，实测正是它们让 22 封无附件邮件被打上了回形针）。
+  // 所以这些假数据补上了文件名：真实能被用户点开下载的附件一定有名字。
   check(
     'hasVisibleAttachments：普通附件算',
-    hasVisibleAttachments([{ isInline: false }]) === true
+    hasVisibleAttachments([{ isInline: false, filename: 'a.pdf' }]) === true
   )
   check(
     'hasVisibleAttachments：只有内嵌图片不算',
-    hasVisibleAttachments([{ isInline: true }]) === false
+    hasVisibleAttachments([{ isInline: true, filename: 'logo.png' }]) === false
   )
   check(
     'hasVisibleAttachments：内嵌 + 普通混合算',
-    hasVisibleAttachments([{ isInline: true }, { isInline: false }]) === true
+    hasVisibleAttachments([{ isInline: true, filename: 'logo.png' }, { isInline: false, filename: 'a.pdf' }]) === true
   )
   check('hasVisibleAttachments：空列表不算', hasVisibleAttachments([]) === false)
   check(
     'hasVisibleAttachments：缺 isInline 字段按普通附件处理',
-    hasVisibleAttachments([{}]) === true
+    hasVisibleAttachments([{ filename: 'report.docx' }]) === true
+  )
+  check(
+    'hasVisibleAttachments：没有文件名的部件不算（Foxmail 内部部件的典型样子）',
+    hasVisibleAttachments([{ isInline: false }]) === false
   )
 
   // 迁移：老库里「只有内嵌附件」的邮件要把标记清掉
@@ -2706,6 +2772,250 @@ Subject: 导出删除 ${i}`,
       .v === String(SCHEMA_VERSION)
   )
   v3.close()
+
+  /* ---------- 25b. 回复全部不把自己加进收件人 ---------- */
+  //
+  // 用户报的问题：点「全部回复」发出去的邮件，收件人里包含自己的地址。
+  // 根因是原邮件的 toText 里本来就有我自己（我是收件人），之前原样拼了进去。
+  section('25b. 回复全部：地址串处理')
+
+  check(
+    '切开地址串：逗号分隔',
+    splitAddressList('a@x.com, b@y.com').length === 2,
+    splitAddressList('a@x.com, b@y.com').join(' | ')
+  )
+  check('切开地址串：分号也认', splitAddressList('a@x.com; b@y.com').length === 2)
+  check(
+    '切开地址串：显示名里的逗号不劈开',
+    splitAddressList('"Zhang, Wei" <zw@x.com>, li@y.com').length === 2,
+    splitAddressList('"Zhang, Wei" <zw@x.com>, li@y.com').join(' | ')
+  )
+  check('切开地址串：空串得到空列表', splitAddressList('').length === 0)
+  check('取地址：尖括号形式', addressOf('张三 <ZS@Example.com>') === 'zs@example.com')
+  check('取地址：裸地址也能取', addressOf('  Me@Example.com ') === 'me@example.com')
+
+  check(
+    '去掉自己：收件人里只有自己时结果为空',
+    excludeAddress('me@example.com', 'me@example.com') === '',
+    `得到「${excludeAddress('me@example.com', 'me@example.com')}」`
+  )
+  check(
+    '去掉自己：大小写不同也算自己',
+    excludeAddress('ME@Example.COM', 'me@example.com') === ''
+  )
+  check(
+    '去掉自己：带显示名的自己也能认出来',
+    excludeAddress('"我" <me@example.com>, other@x.com', 'me@example.com') === 'other@x.com',
+    excludeAddress('"我" <me@example.com>, other@x.com', 'me@example.com')
+  )
+  check(
+    '去掉自己：别人的地址一个不动',
+    excludeAddress('a@x.com, b@y.com', 'me@example.com') === 'a@x.com, b@y.com'
+  )
+  check(
+    '去掉自己：中间夹着的自己会被挑掉，其余顺序不变',
+    excludeAddress('a@x.com, me@example.com, b@y.com', 'me@example.com') === 'a@x.com, b@y.com',
+    excludeAddress('a@x.com, me@example.com, b@y.com', 'me@example.com')
+  )
+  check('去掉自己：没给自身地址时原样返回', excludeAddress('a@x.com', '') === 'a@x.com')
+  check(
+    '去掉自己：空地址串不抛错',
+    excludeAddress('', 'me@example.com') === ''
+  )
+
+  /* ---------- 25c. 同主题回复线索折叠 ---------- */
+  section('25c. 同主题回复线索折叠（按主题归并）')
+
+  check('threadKey：普通主题原样（小写）', threadKey('Quarterly Report') === 'quarterly report')
+  check('threadKey：去掉 Re:', threadKey('Re: 报价单') === '报价单', threadKey('Re: 报价单'))
+  check('threadKey：去掉大写 RE:', threadKey('RE: 报价单') === '报价单')
+  check('threadKey：去掉中文回复:', threadKey('回复：报价单') === '报价单')
+  check('threadKey：去掉答复:', threadKey('答复: 报价单') === '报价单')
+  check('threadKey：去掉 Fwd:', threadKey('Fwd: 报价单') === '报价单')
+  check('threadKey：去掉 Fw:', threadKey('Fw: 报价单') === '报价单')
+  check('threadKey：去掉转发:', threadKey('转发：报价单') === '报价单')
+  check('threadKey：层层叠加的前缀全部剥掉', threadKey('Re: 回复: RE: fwd: 报价单') === '报价单',
+    threadKey('Re: 回复: RE: fwd: 报价单'))
+  check('threadKey：带计数的 Re[2] 也剥掉', threadKey('Re[2]: 报价单') === '报价单',
+    threadKey('Re[2]: 报价单'))
+  check('threadKey：首尾空白不影响', threadKey('  Re:   报价单  ') === '报价单')
+  check(
+    'threadKey：不同主题得到不同键',
+    threadKey('Re: 甲') !== threadKey('Re: 乙')
+  )
+  check('threadKey：只有前缀时得到空串', threadKey('Re: ') === '')
+  check('threadKey：null 安全', threadKey('') === '')
+
+  const thMails = [
+    { id: 1, subject: 'Re: 项目进度' },
+    { id: 2, subject: '别的邮件' },
+    { id: 3, subject: '项目进度' },
+    { id: 4, subject: '回复：项目进度' }
+  ]
+  const grouped = groupByThread(thMails, true)
+  check('折叠：4 封归成 2 组', grouped.length === 2, String(grouped.length))
+  check('折叠：同主题的 3 封并成一组', grouped[0].rest.length === 2, String(grouped[0].rest.length))
+  check('折叠：组头是最先出现的那封', grouped[0].head.id === 1)
+  check('折叠：组内其余按原顺序', grouped[0].rest.map((m) => m.id).join(',') === '3,4',
+    grouped[0].rest.map((m) => m.id).join(','))
+  check('折叠：组顺序跟随列表顺序（不打乱排序）', grouped[1].head.id === 2)
+  const flat = groupByThread(thMails, false)
+  check('关闭折叠：一对一', flat.length === 4 && flat.every((g) => g.rest.length === 0))
+  check('关闭折叠：顺序不变', flat.map((g) => g.head.id).join(',') === '1,2,3,4')
+
+  /* ---------- 25d. 附件标记口径 + v7 迁移 ---------- */
+  section('25d. 附件标记口径与 v7 迁移（已回复/已转发）')
+
+  check('真附件：普通 pdf 算', isRealAttachment({ filename: 'a.pdf', contentType: 'application/pdf' }))
+  check('真附件：内嵌图不算', isRealAttachment({ filename: 'logo.png', isInline: true }) === false)
+  check('真附件：没有文件名不算', isRealAttachment({ filename: '' }) === false)
+  check('真附件：文件名只有空白不算', isRealAttachment({ filename: '   ' }) === false)
+  check('真附件：占位名 unnamed 不算', isRealAttachment({ filename: 'unnamed' }) === false,
+    'Foxmail 解析不出名字时的占位名')
+  check('真附件：占位名 noname 不算', isRealAttachment({ filename: 'noname' }) === false)
+  check('真附件：占位名 unknown 不算', isRealAttachment({ filename: 'unknown' }) === false)
+  check(
+    '真附件：foxmailicon 这种内部部件不算',
+    isRealAttachment({ filename: 'icon.gif', contentType: 'foxmailicon' }) === false,
+    '真实邮箱里这类部件有 156KB，之前被当成附件'
+  )
+  check(
+    '真附件：带 charset 的 Content-Type 也能识别',
+    isRealAttachment({ filename: 'x', contentType: 'FoxmailIcon; charset=utf-8' }) === false
+  )
+  check(
+    '真附件：一组里只有一个真附件就整体算有附件',
+    hasRealAttachments([
+      { filename: 'unnamed' },
+      { filename: 'logo.png', isInline: true },
+      { filename: '合同.docx' }
+    ])
+  )
+  check(
+    '真附件：一组里全是垃圾部件就整体算没有',
+    hasRealAttachments([{ filename: 'unnamed' }, { filename: 'logo.png', isInline: true }]) === false
+  )
+
+  // v6 → v7：老库没有 replied_at / forwarded_at 两列，迁移要能补上且不丢邮件
+  const v6Path = join(root, 'v6-replied.db')
+  const v6 = openDatabase(v6Path)
+  v6.exec(`
+    CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE accounts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL DEFAULT '',
+      display_name TEXT NOT NULL DEFAULT '', is_local INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE folders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER NOT NULL DEFAULT 1,
+      name TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '',
+      role TEXT NOT NULL DEFAULT 'custom', uid_next INTEGER NOT NULL DEFAULT 0,
+      uid_validity INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE mails (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER NOT NULL DEFAULT 1,
+      folder_id INTEGER NOT NULL DEFAULT 1, uid INTEGER, message_id TEXT,
+      subject TEXT NOT NULL DEFAULT '', from_name TEXT NOT NULL DEFAULT '',
+      from_addr TEXT NOT NULL DEFAULT '', to_text TEXT NOT NULL DEFAULT '',
+      cc_text TEXT NOT NULL DEFAULT '', bcc_text TEXT NOT NULL DEFAULT '',
+      reply_to TEXT NOT NULL DEFAULT '', date INTEGER NOT NULL DEFAULT 0,
+      body_text TEXT NOT NULL DEFAULT '', body_html TEXT, size INTEGER NOT NULL DEFAULT 0,
+      unread INTEGER NOT NULL DEFAULT 0, flagged INTEGER NOT NULL DEFAULT 0,
+      has_attachments INTEGER NOT NULL DEFAULT 0, raw_headers TEXT NOT NULL DEFAULT '',
+      snippet TEXT NOT NULL DEFAULT '', rules_done INTEGER NOT NULL DEFAULT 0,
+      rules_fired TEXT NOT NULL DEFAULT '[]', in_reply_to TEXT, refs TEXT,
+      source TEXT NOT NULL DEFAULT 'local', archive_tag TEXT,
+      created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO meta (key, value) VALUES ('schema_version', '6');
+    INSERT INTO accounts (id, email) VALUES (1, 'me@example.com');
+    INSERT INTO folders (id, account_id, name, path, role) VALUES (1, 1, '收件箱', 'INBOX', 'inbox');
+    INSERT INTO mails (id, subject) VALUES (1, '老邮件');
+  `)
+  migrate(v6)
+  const cols = v6
+    .prepare("SELECT name FROM pragma_table_info('mails')")
+    .all() as { name: string }[]
+  const colNames = cols.map((c) => c.name)
+  check('迁移 v6→v7：补上 replied_at 列', colNames.includes('replied_at'))
+  check('迁移 v6→v7：补上 forwarded_at 列', colNames.includes('forwarded_at'))
+  check(
+    '迁移 v6→v7：老邮件没有被删掉',
+    (v6.prepare('SELECT COUNT(*) AS c FROM mails').get() as { c: number }).c === 1
+  )
+  check(
+    '迁移 v6→v7：老邮件的两个新字段是 NULL（当作没回复过）',
+    (v6.prepare('SELECT replied_at AS r, forwarded_at AS f FROM mails WHERE id = 1').get() as {
+      r: number | null
+      f: number | null
+    }).r === null
+  )
+  v6.close()
+
+  // 标记「已回复 / 已转发」后，列表拿到的摘要里要能看出来 ——
+  // 列表上的那个小箭头图标就是读这两个字段的。
+  const markOwner = repo.createAccount(
+    createAccountDraft({ email: 'mark@example.com', displayName: '标记测试' })
+  )
+  if (!markOwner) {
+    check('标记测试账户建好了', false, 'repo.createAccount 没返回可用账户')
+  } else {
+    const markFolder = repo.upsertFolder(markOwner.id, '收件箱', 'INBOX', 'inbox')
+    const mkMail = (subject: string): number | null =>
+      repo.insertMail({
+        accountId: markOwner.id,
+        folderId: markFolder.id,
+        uid: null,
+        messageId: null,
+        subject,
+        fromName: '对方',
+        fromAddr: 'peer@example.com',
+        toText: 'mark@example.com',
+        ccText: '',
+        bccText: '',
+        replyTo: '',
+        date: Date.now(),
+        bodyText: '内容',
+        bodyHtml: null,
+        rawHeaders: '',
+        size: 10,
+        unread: false,
+        flagged: false,
+        hasAttachments: false,
+        source: 'local'
+      })
+    const repliedId = mkMail('回复标记测试')
+    const forwardedId = mkMail('转发标记测试')
+    const plainId = mkMail('没处理过的测试')
+    if (repliedId && forwardedId && plainId) {
+      repo.markMailReplied(repliedId)
+      repo.markMailForwarded(forwardedId)
+      const rows = repo.listMails({ accountId: markOwner.id, limit: 50, offset: 0 })
+      const byId = new Map(rows.items.map((m) => [m.id, m]))
+      check('已回复的邮件：摘要里 replied=true', byId.get(repliedId)?.replied === true)
+      check('已回复的邮件：不会同时被标成已转发', byId.get(repliedId)?.forwarded === false)
+      check('已转发的邮件：摘要里 forwarded=true', byId.get(forwardedId)?.forwarded === true)
+      check(
+        '没处理过的邮件：两个标记都是 false',
+        byId.get(plainId)?.replied === false && byId.get(plainId)?.forwarded === false
+      )
+      // 重复标记不该把时间往后推（COALESCE 只写第一次）
+      const firstAt = (
+        getDb().prepare('SELECT replied_at AS r FROM mails WHERE id = ?').get(repliedId) as {
+          r: number
+        }
+      ).r
+      repo.markMailReplied(repliedId)
+      const secondAt = (
+        getDb().prepare('SELECT replied_at AS r FROM mails WHERE id = ?').get(repliedId) as {
+          r: number
+        }
+      ).r
+      check('重复标记已回复：保留第一次的时间', firstAt === secondAt)
+    } else {
+      check('标记测试邮件插入成功', false, 'insertMail 返回 null')
+    }
+  }
 
   /* ---------- 25. mailto: 链接解析（系统邮件程序） ---------- */
   //

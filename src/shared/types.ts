@@ -97,6 +97,10 @@ export interface MailSummary {
   unread: boolean
   flagged: boolean
   hasAttachments: boolean
+  /** 我回复过这封（列表上显示回复箭头） */
+  replied: boolean
+  /** 我转发过这封（列表上显示转发箭头） */
+  forwarded: boolean
   size: number
   source: MailSource
   archiveTag: string | null
@@ -424,6 +428,11 @@ export interface AppSettings {
    * 关掉之后需要自己用右键菜单或 M 键改状态。
    */
   autoMarkRead: boolean
+  /**
+   * 邮件列表里把同一主题的回复线索折叠成一行。
+   * 默认开启：多数人希望一屏看到更多不同的对话，点开再看细节。
+   */
+  threadCollapse: boolean
 }
 
 export interface AppPaths {

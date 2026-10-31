@@ -22,7 +22,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoSyncEnabled: true,
   syncIntervalMinutes: 5,
   defaultArchiveTag: 'Foxmail存档',
-  autoMarkRead: true
+  autoMarkRead: true,
+  threadCollapse: true
 }
 
 let cache: AppSettings | null = null
@@ -79,6 +80,7 @@ export function normalizeSettings(s: AppSettings): AppSettings {
       ? s.shortcuts
       : {}
   const autoMarkRead = typeof s.autoMarkRead === 'boolean' ? s.autoMarkRead : true
+  const threadCollapse = typeof s.threadCollapse === 'boolean' ? s.threadCollapse : true
   // 老用户的 settings.json 里没有这两个字段，要给上默认值；间隔夹到合理范围，
   // 免得手改配置文件写成 0 或负数导致定时器空转
   const autoSyncEnabled = typeof s.autoSyncEnabled === 'boolean' ? s.autoSyncEnabled : true
@@ -90,6 +92,7 @@ export function normalizeSettings(s: AppSettings): AppSettings {
     theme,
     shortcuts,
     autoMarkRead,
+    threadCollapse,
     autoSyncEnabled,
     syncIntervalMinutes,
     sidebarWidth:

@@ -1,7 +1,7 @@
 import type { Db } from './sqlite'
 import { createFts, ftsNeedsRebuild, rebuildFts } from './fts'
 
-export const SCHEMA_VERSION = 5
+export const SCHEMA_VERSION = 7
 
 /**
  * 建表语句。全部使用 IF NOT EXISTS，保证在已有数据库上重复执行是安全的。
@@ -346,6 +346,52 @@ export function migrate(db: Db): void {
       console.log(`[SimpleMail] 已修正 ${changed} 封邮件的附件标记（内嵌图片不再算附件）`)
     }
     setMeta(db, 'schema_version', '4')
+  }
+
+  // v6 → v7：记录「这封邮件我回复过 / 转发过」，用于在列表里显示对应图标
+  if (Number(getMeta(db, 'schema_version') ?? '1') < 7) {
+    const cols = tableColumns(db, 'mails')
+    if (!cols.has('replied_at')) {
+      db.exec('ALTER TABLE mails ADD COLUMN replied_at INTEGER')
+    }
+    if (!cols.has('forwarded_at')) {
+      db.exec('ALTER TABLE mails ADD COLUMN forwarded_at INTEGER')
+    }
+    setMeta(db, 'schema_version', '7')
+  }
+
+  // v5 → v6：修掉「回复邮件也被打上附件标」的误判
+  //
+  // 统计真实邮箱（9097 封）发现：Foxmail 会往邮件里塞 `Content-Type: foxmailicon`
+  // 的内部部件（156KB、无名），还有一批 `unnamed` / 无名部件 —— 它们被记成
+  // 「非内嵌附件」，于是回复邮件也显示了回形针。2403 封带标记的里有 22 封
+  // 纯粹是这些垃圾部件造成的。
+  //
+  // 这里按「有非内嵌 + 有可用文件名 + 不是内部类型」重算。
+  // 只处理**已经有附件记录**的邮件：正文还没下载的（没记录）保留 BODYSTRUCTURE
+  // 的推测值，等正文下来后会自然修正。
+  if (Number(getMeta(db, 'schema_version') ?? '1') < 6) {
+    const fixed = db
+      .prepare(
+        `UPDATE mails SET has_attachments = 0
+          WHERE has_attachments = 1
+            AND EXISTS (SELECT 1 FROM attachments a WHERE a.mail_id = mails.id)
+            AND NOT EXISTS (
+              SELECT 1 FROM attachments a
+               WHERE a.mail_id = mails.id
+                 AND a.is_inline = 0
+                 AND TRIM(a.filename) <> ''
+                 AND LOWER(TRIM(a.filename)) NOT IN ('unnamed','noname','unknown')
+                 AND LOWER(TRIM(a.content_type)) NOT LIKE 'foxmailicon%'
+            )`
+      )
+      .run()
+    const changed = Number((fixed as { changes?: number }).changes ?? 0)
+    if (changed > 0) {
+      // eslint-disable-next-line no-console
+      console.log(`[SimpleMail] 已修正 ${changed} 封邮件的附件标记（Foxmail 内部部件/无名部件不算附件）`)
+    }
+    setMeta(db, 'schema_version', '6')
   }
 
   // v4 → v5：新增地址簿表。

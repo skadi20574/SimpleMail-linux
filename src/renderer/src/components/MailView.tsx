@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import type { AttachmentMeta, MailDetail } from '../api'
 import { formatFullDate, formatSize, prepareHtmlBody, wrapHtmlDocument } from '../utils'
 import Icon from './Icon'
+import { isRealAttachment } from '@shared/attachments'
 
 interface Props {
   mail: MailDetail | null
@@ -42,7 +43,9 @@ export default function MailView(props: Props): JSX.Element {
     )
   }
 
-  const attachments: AttachmentMeta[] = mail.attachments.filter((a) => !a.isInline)
+  // 与列表上的回形针用同一套判定（src/shared/attachments.ts），
+  // 保证「图标说有附件」和「这里能列出来」永远一致
+  const attachments: AttachmentMeta[] = mail.attachments.filter(isRealAttachment)
 
   return (
     <div className="preview">

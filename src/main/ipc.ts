@@ -697,6 +697,16 @@ export function registerIpc(): void {
   /** 对某封已存在的邮件立即套用规则（调试用） */
   ipcMain.handle('rules:applyToMail', (_e, mailId: number) => applyRulesToMail(mailId, true))
 
+  /* ── 回复 / 转发标记（列表上显示图标用）── */
+  ipcMain.handle('mails:markReplied', (_e, id: number) => {
+    repo.markMailReplied(id)
+    return { ok: true }
+  })
+  ipcMain.handle('mails:markForwarded', (_e, id: number) => {
+    repo.markMailForwarded(id)
+    return { ok: true }
+  })
+
   /* ── 地址簿 ── */
   ipcMain.handle('contacts:list', (_e, query?: string) => repo.listContacts(query ?? ''))
   ipcMain.handle('contacts:remember', (_e, entries: { email: string; name?: string }[]) =>

@@ -56,6 +56,9 @@ const api = {
     /** 弹出原生右键菜单，返回用户选择的动作 */
     contextMenu: (payload: unknown) => invoke('mails:contextMenu', payload),
     remove: (id: number) => invoke('mails:delete', id),
+    /** 记下「这封我回复/转发过」，列表上显示对应图标 */
+    markReplied: (id: number) => invoke('mails:markReplied', id),
+    markForwarded: (id: number) => invoke('mails:markForwarded', id),
     send: (payload: unknown) => invoke('mails:send', payload),
     saveDraft: (payload: unknown) => invoke('mails:saveDraft', payload)
   },
