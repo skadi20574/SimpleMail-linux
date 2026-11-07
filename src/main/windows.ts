@@ -286,13 +286,34 @@ function attachScreenshotHook(win: BrowserWindow): void {
                         html: (document.querySelector('.rtbody').innerHTML || '').slice(0, 160)
                       }
                     : null,
+                  // 光标在哪：写信窗口一打开，光标必须落在正文最上方
+                  // （前面 0 个字），否则用户一按键盘就打在引用/签名里。
+                  caret: (() => {
+                    const sel = window.getSelection()
+                    const body = document.querySelector('.rtbody')
+                    if (!sel || !sel.rangeCount || !body) return null
+                    const r = sel.getRangeAt(0)
+                    const pre = document.createRange()
+                    pre.selectNodeContents(body)
+                    pre.setEnd(r.startContainer, r.startOffset)
+                    const block = r.startContainer.nodeType === 1
+                      ? r.startContainer
+                      : r.startContainer.parentElement
+                    return {
+                      inEditor: body.contains(r.commonAncestorContainer),
+                      collapsed: r.collapsed,
+                      textBefore: pre.toString().length,
+                      block: (block && block.tagName) || '',
+                      activeIsEditor: document.activeElement === body
+                    }
+                  })(),
                   composerMode: [...document.querySelectorAll('.compose-row .iconbtn')]
                     .map(el => (el.textContent || '').trim())
                     .filter(t => t === '富文本' || t === '纯文本'),
                   // ── 写信窗口（验证 mailto: 链接有没有正确填进来）──
                   // 按「标签 → 输入框」取名，比按序号稳妥（抄送/密送是条件渲染的）
                   composer: document.querySelector('.composer') ? '开' : '关',
-                  composerAttachments: [...document.querySelectorAll('.attachchip .fname')]
+                  composerAttachments: [...document.querySelectorAll('.composer .attachchip .fname')]
                     .map(el => (el.textContent || '').trim()),
                   composerFields: (() => {
                     const out = {}
@@ -399,6 +420,58 @@ function attachScreenshotHook(win: BrowserWindow): void {
                 pass.粘贴去掉远程图片 = !lower.includes('<img')
                 pass.粘贴去掉javascript链接 = !lower.includes('javascript:')
                 pass.粘贴保留正常链接 = pasted.includes('href="https://ok.test/x"')
+
+                // 图片：粘贴一张真的 PNG 进来，然后调显示比例，
+                // 最后点「发送」看交给 MIME 层的载荷里是不是 cid: 而不是 data:
+                body.innerHTML = '<div>正文</div>'
+                pick('正文')
+                const canvas = document.createElement('canvas')
+                canvas.width = 40
+                canvas.height = 30
+                const ctx2 = canvas.getContext('2d')
+                ctx2.fillStyle = '#d93025'
+                ctx2.fillRect(0, 0, 40, 30)
+                const pngUrl = canvas.toDataURL('image/png')
+                const bin2 = atob(pngUrl.split(',')[1])
+                const bytes2 = new Uint8Array(bin2.length)
+                for (let i = 0; i < bin2.length; i++) bytes2[i] = bin2.charCodeAt(i)
+                const imgFile = new File([bytes2], 'selftest.png', { type: 'image/png' })
+                const dtImg = new DataTransfer()
+                dtImg.items.add(imgFile)
+                const evImg = new ClipboardEvent('paste', { bubbles: true, cancelable: true })
+                Object.defineProperty(evImg, 'clipboardData', { value: dtImg })
+                body.dispatchEvent(evImg)
+                for (let i = 0; i < 6; i++) await tick()
+                const imgEl = body.querySelector('img[data-cid]')
+                pass.粘贴图片已插入 = Boolean(imgEl)
+                pass.粘贴图片有contentId = Boolean(imgEl && imgEl.getAttribute('data-cid'))
+                pass.内嵌图不进附件条 = document.querySelectorAll('.composer .attachchip').length === 0
+                if (imgEl) {
+                  // 点一下图片：应该出现「显示比例」小工具条
+                  imgEl.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+                  await tick()
+                  pass.比例工具条出现 = Boolean(document.querySelector('.rtimgbar'))
+                  const btn50 = [...document.querySelectorAll('.rtimgbar .rtbtn')]
+                    .find(b => b.textContent === '50%')
+                  if (btn50) {
+                    btn50.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
+                    btn50.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+                    await tick()
+                  }
+                  // 注意：这里不能写正则字面量 —— 模板字符串会把反斜杠转义吃掉一层，
+                  // 生成的正则就成了 width:s*50%，永远匹配不上（踩过一次）。
+                  // 反引号也不能出现在这个模板字符串里，会把字符串提前截断。
+                  pass.比例50已生效 = (imgEl.getAttribute('style') || '').includes('50%')
+                  pass.图片比例已记录 = imgEl.getAttribute('data-smw') === '50'
+                }
+                // 点发送：主进程会打印这一封的载荷（html 里还有没有 data:、附件 cid）
+                const sendBtn = [...document.querySelectorAll('.dialog-foot .btn')]
+                  .find(b => b.textContent.includes('发送'))
+                if (sendBtn) {
+                  sendBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+                  for (let i = 0; i < 4; i++) await tick()
+                  pass.已尝试发送 = true
+                }
                 body.innerHTML = '<div>甲乙丙丁戊</div>'
                 pick('乙'); pass.粗体 = click(btn('.b'))
                 pick('丙'); pass.斜体 = click(btn('.i'))

@@ -53,6 +53,17 @@ export default function ArchiveDialog(props: Props): JSX.Element {
   const [tag, setTag] = useState(props.defaultArchiveTag)
   const [targetAccountId, setTargetAccountId] = useState<number | undefined>(props.initialAccountId)
   const [importing, setImporting] = useState(false)
+  /**
+   * 最小化到后台。
+   *
+   * 起因：导入/导出几个 GB 的存档要跑很久，而这是个全屏模态对话框 ——
+   * 期间连看信、发信都点不动。现在任务跑起来之后可以点「最小化」，
+   * 对话框缩成右下角一个小条，其余界面照常用；进度还在走，点「展开」能回来。
+   *
+   * 注意是「缩起来」而不是「关掉」：状态都还在这个组件里，
+   * 关掉就看不到进度和结果了。
+   */
+  const [minimized, setMinimized] = useState(false)
   const [importProgress, setImportProgress] = useState<ImportProgress | null>(null)
   const [importSummary, setImportSummary] = useState<string | null>(null)
 
@@ -138,6 +149,8 @@ export default function ArchiveDialog(props: Props): JSX.Element {
       props.onError(err instanceof Error ? err.message : String(err))
     } finally {
       setImporting(false)
+      // 跑完自动展开：结果得让用户看见，不能只剩一个小条
+      setMinimized(false)
     }
   }
 
@@ -185,6 +198,7 @@ export default function ArchiveDialog(props: Props): JSX.Element {
       props.onError(err instanceof Error ? err.message : String(err))
     } finally {
       setExporting(false)
+      setMinimized(false)
     }
   }
 
@@ -206,13 +220,46 @@ export default function ArchiveDialog(props: Props): JSX.Element {
 
   const foldersOfExportAccount = props.folders.filter((f) => f.accountId === exportAccountId)
 
+  /** 是否正在跑耗时的存档任务（决定能不能最小化） */
+  const jobRunning = importing || exporting
+
+  if (minimized) {
+    const percent = jobRunning
+      ? importing && importProgress?.total
+        ? Math.min(100, Math.round((importProgress.current / importProgress.total) * 100))
+        : null
+      : 100
+    return (
+      <div className="jobpill">
+        {jobRunning ? <span className="busy dark" /> : <Icon name="check" size={12} />}
+        <span className="jobtext">
+          {jobRunning
+            ? `${importing ? '正在导入存档' : '正在导出存档'}${percent !== null ? ` · ${percent}%` : ''}`
+            : '存档任务已结束'}
+        </span>
+        <button className="iconbtn" onClick={() => setMinimized(false)}>
+          展开
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="overlay">
       <div className="dialog" style={{ width: 860, height: '86vh' }}>
         <div className="dialog-head">
           <span>Foxmail 存档导入 / 导出</span>
           <span className="spacer" />
-          <button className="iconbtn" onClick={props.onClose}>
+          {jobRunning && (
+            <button
+              className="iconbtn"
+              title="缩到右下角继续跑，期间可以正常看信、发信"
+              onClick={() => setMinimized(true)}
+            >
+              最小化
+            </button>
+          )}
+          <button className="iconbtn" onClick={() => (jobRunning ? setMinimized(true) : props.onClose())}>
             <Icon name="close" size={12} />
           </button>
         </div>

@@ -46,3 +46,19 @@ export function isRealAttachment(a: AttachmentLike): boolean {
 export function hasRealAttachments(atts: readonly AttachmentLike[]): boolean {
   return atts.some(isRealAttachment)
 }
+
+/** 常见图片扩展名 → MIME。拖拽/插入图片时用来判断内容类型。 */
+const IMAGE_EXT_TYPES: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp'
+}
+
+/** 按扩展名猜 MIME；不是已知图片就返回 undefined */
+export function guessImageType(filename: string): string | undefined {
+  const ext = (filename ?? '').split('.').pop()?.toLowerCase() ?? ''
+  return IMAGE_EXT_TYPES[ext]
+}

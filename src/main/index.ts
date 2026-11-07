@@ -29,7 +29,7 @@ import type { BrowserWindow } from 'electron'
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { registerIpc, relaunchApp } from './ipc'
+import { cleanComposeTmp, registerIpc, relaunchApp } from './ipc'
 import { getDb, closeDb, setMeta, getMeta } from './db'
 import * as repo from './db/repo'
 import { appPaths } from './paths'
@@ -254,6 +254,8 @@ if (!hasSingleInstanceLock) {
     }
 
     registerIpc()
+    // 上次会话里粘贴进正文、但没发出去的图片临时文件，启动时清掉
+    cleanComposeTmp()
     registerAttachmentProtocol()
     createMainWindow()
 

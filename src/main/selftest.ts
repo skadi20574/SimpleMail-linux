@@ -28,7 +28,7 @@ import { closeDb, getDb } from './db'
 import { openDatabase } from './db/sqlite'
 import { initSchema, migrate, SCHEMA_VERSION } from './db/schema'
 import { hasVisibleAttachments } from './mail/parser'
-import { hasRealAttachments, isRealAttachment } from '@shared/attachments'
+import { guessImageType, hasRealAttachments, isRealAttachment } from '@shared/attachments'
 import { addressOf, excludeAddress, splitAddressList } from '@shared/address'
 import { groupByThread, threadKey } from '@shared/thread'
 import { nextAfterDelete } from '@shared/mail-nav'
@@ -2381,6 +2381,42 @@ Subject: 导出删除 ${i}`,
       js.includes('threadCollapse'),
       js.includes('threadCollapse') ? '' : '界面没接上 threadCollapse 设置'
     )
+
+    /* ── 1.2.7 新增的界面部件 ── */
+
+    // 图片显示比例小工具条
+    check('图片比例工具条有样式', ruleOf('.rtimgbar') !== null)
+    check(
+      '正文里的图片不超出栏宽',
+      Boolean(ruleOf('.rtbody img')?.includes('max-width: 100%')),
+      ruleOf('.rtbody img') ?? ''
+    )
+    check('选中的图片有描边（看得出选中了哪张）', ruleOf('.rtbody img.rtimg-sel') !== null)
+
+    // 拖文件进写信窗口的提示层
+    check('拖拽文件提示层有样式', ruleOf('.dropmask') !== null)
+    check('拖拽文件提示框有样式', ruleOf('.droptip') !== null)
+
+    // 存档任务最小化后的右下角小条
+    const pill = ruleOf('.jobpill')
+    check('存档任务最小化小条有样式', pill !== null, pill ?? '找不到 .jobpill')
+    check(
+      '最小化小条固定悬浮（不影响其它操作）',
+      Boolean(pill && /position:\s*fixed/.test(pill)),
+      pill ?? ''
+    )
+
+    // 产物里必须真的把图片送进 MIME 层（cid:），而不是把 base64 发出去
+    check(
+      '产物里有 cid: 内嵌图的处理（inlineImagesToCid 的别名会带 cid:）',
+      js.includes('cid:'),
+      js.includes('cid:') ? '' : '产物里找不到 cid: 拼接，内嵌图片可能仍以 data: 发出'
+    )
+    check(
+      '产物里有拖拽取真实路径的逻辑（getPathForFile）',
+      js.includes('getPathForFile') || js.includes('pathForFile'),
+      js.includes('getPathForFile') || js.includes('pathForFile') ? '' : '拖拽文件加附件可能没接上'
+    )
   }
 
 
@@ -2895,6 +2931,28 @@ Subject: 导出删除 ${i}`,
     '真附件：一组里全是垃圾部件就整体算没有',
     hasRealAttachments([{ filename: 'unnamed' }, { filename: 'logo.png', isInline: true }]) === false
   )
+
+  // 内嵌图片（正文里的图）不算「附件」—— 但它自己必须是合法附件，
+  // 否则发出去的邮件里 cid: 指向的部件就丢了
+  check(
+    '内嵌图片不算列表上的「含附件」',
+    hasRealAttachments([{ filename: 'photo.png', contentType: 'image/png', isInline: true }]) === false
+  )
+  check(
+    '内嵌图片本身仍是合法附件（isRealAttachment 只看 isInline 之外的条件）',
+    isRealAttachment({ filename: 'photo.png', contentType: 'image/png' }) === true
+  )
+
+  // 拖拽/插入图片时按扩展名判断 MIME
+  check('图片类型：png', guessImageType('a.png') === 'image/png')
+  check('图片类型：大写扩展名也认', guessImageType('照片.JPG') === 'image/jpeg')
+  check('图片类型：jpeg', guessImageType('b.jpeg') === 'image/jpeg')
+  check('图片类型：gif', guessImageType('c.gif') === 'image/gif')
+  check('图片类型：webp', guessImageType('d.webp') === 'image/webp')
+  check('图片类型：bmp', guessImageType('e.bmp') === 'image/bmp')
+  check('图片类型：pdf 不是图片', guessImageType('f.pdf') === undefined)
+  check('图片类型：没有扩展名', guessImageType('noext') === undefined)
+  check('图片类型：空文件名', guessImageType('') === undefined)
 
   // v6 → v7：老库没有 replied_at / forwarded_at 两列，迁移要能补上且不丢邮件
   const v6Path = join(root, 'v6-replied.db')

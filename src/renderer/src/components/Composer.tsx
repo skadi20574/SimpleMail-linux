@@ -3,7 +3,7 @@ import AddressField from './AddressField'
 import RichEditor, { type RichEditorHandle } from './RichEditor'
 import type { Account, ComposeAttachment, ComposePayload, MailDetail } from '../api'
 import { api } from '../api'
-import { escapeHtml, htmlToPlainText, plainToHtml } from '../richtext'
+import { escapeHtml, htmlToPlainText, inlineImagesToCid, plainToHtml } from '../richtext'
 import { excludeAddress } from '@shared/address'
 import { forwardSubject, formatFullDate, replySubject, shortAddress } from '../utils'
 import Icon from './Icon'
@@ -42,9 +42,17 @@ export function signatureHtml(signature: string): string {
   )
 }
 
-/** 引用块写成内联样式：收件端读不到我们的 CSS 文件。 */
+/**
+ * 引用块写成内联样式：收件端读不到我们的 CSS 文件。
+ *
+ * 文字颜色刻意用 inherit 而不是写死一个灰：
+ *   · 写死深灰（以前是 #5b636d）在深色主题的写信窗口里就是一片发灰的字，
+ *     用户的原话是「颜色也灰不拉几的」；
+ *   · inherit 让收件端用它自己的正文颜色，白底黑字、暗色主题亮字都对。
+ * 层级靠左边的竖线和缩进来区分，不靠把字调灰。
+ */
 const QUOTE_STYLE =
-  'margin:8px 0 0 0;padding-left:12px;border-left:3px solid #d8dde3;color:#5b636d'
+  'margin:8px 0 0 0;padding-left:12px;border-left:3px solid #c8cfd7;color:inherit'
 
 /** 去掉正文里已有的签名块（切换发件账户时用） */
 export function stripSignatureHtml(html: string): string {
@@ -59,6 +67,14 @@ export function buildReplyInit(
   /** 当前账户自己的地址：全部回复时要把它排除掉 */
   selfAddress = ''
 ): ComposeInit {
+  /**
+   * 签名放在**最下面**，正文开头留空给光标。
+   *
+   * 以前签名在正文最前面（纯文本时代就是那样拼的），到了富文本编辑器里就变成
+   * 「点了回复，光标停在签名上方，签名挡在要写字的头顶上」——
+   * 用户的实际感受是「光标位置不对」。现在统一成：
+   *   第一行空着（光标在这里闪）→ 引用原文 → 签名。
+   */
   const sig = signature ? `\n\n--\n${signature}` : ''
   const headLines = [
     '------------------ 原始邮件 ------------------',
@@ -83,19 +99,35 @@ export function buildReplyInit(
   const quoteHtml = (text: string): string =>
     `<blockquote style="${QUOTE_STYLE}">${plainToHtml(text)}</blockquote>`
   const sigHtml = signatureHtml(signature)
+  /** 开头那个空行：光标就落在这里，用户直接开始写 */
+  const TOP_LINE = '<div><br></div>'
   const htmlFor = (header: string, body: string): string =>
-    `${sigHtml}${header ? `<div style="color:#5b636d">${header}</div>` : ''}${quoteHtml(body)}`
+    `${TOP_LINE}${header ? `<div style="color:inherit;font-size:12px">${header}</div>` : ''}${quoteHtml(body)}${sigHtml}`
 
   if (mode === 'forward') {
+    /**
+     * 转发要**带上原邮件的附件** —— 用户的原话是「转发邮件时，要带上原邮件的附件」。
+     * 内嵌图片（签名 logo、正文插图）也一起带上：它们已经在原邮件里，转发时
+     * 一起走 MIME 才能让引用里的 cid 仍然有东西可指。
+     */
+    const carried: ComposeAttachment[] = mail.attachments
+      .filter((a) => a.storedPath)
+      .map((a) => ({
+        path: a.storedPath as string,
+        filename: a.filename,
+        contentType: a.contentType,
+        contentId: a.contentId ?? undefined,
+        isInline: a.isInline
+      }))
     return {
       accountId,
       to: '',
       cc: '',
       bcc: '',
       subject: forwardSubject(mail.subject),
-      body: `${sig}\n\n${quotedHeader}${mail.bodyText || ''}`,
+      body: `\n\n${quotedHeader}${mail.bodyText || ''}${sig}`,
       html: htmlFor(headerHtml, mail.bodyText || ''),
-      attachments: []
+      attachments: carried
     }
   }
 
@@ -118,7 +150,7 @@ export function buildReplyInit(
     cc: shortAddress(cc),
     bcc: '',
     subject: replySubject(mail.subject),
-    body: `${sig}\n\n${quotedHeader}${quotedBody}`,
+    body: `\n\n${quotedHeader}${quotedBody}${sig}`,
     html: htmlFor(headerHtml, mail.bodyText || ''),
     inReplyTo: mail.messageId,
     references: mail.references ?? mail.messageId,
@@ -276,6 +308,51 @@ export default function Composer(props: Props): JSX.Element {
     setDirty(true)
   }
 
+  /** 内嵌图落库后记进附件列表（发送/存草稿时会被复制进正式附件目录） */
+  const registerInline = (saved: ComposeAttachment): void => {
+    patch({ attachments: [...form.attachments, saved] })
+  }
+
+  /** 剪贴板里粘出来的图片 → 内嵌附件 */
+  const saveInlineImage = async (
+    file: File
+  ): Promise<{ dataUrl: string; contentId: string } | null> => {
+    if (file.size > 20 * 1024 * 1024) return null
+    const dataUrl = await new Promise<string | null>((resolve) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null)
+      reader.onerror = () => resolve(null)
+      reader.readAsDataURL(file)
+    })
+    if (!dataUrl) return null
+    const comma = dataUrl.indexOf(',')
+    if (comma === -1) return null
+    const saved = await api.attachments.savePastedImage({
+      filename: file.name || `粘贴的图片-${Date.now()}.png`,
+      contentType: file.type || 'image/png',
+      dataBase64: dataUrl.slice(comma + 1)
+    })
+    if (!saved || !saved.contentId) return null
+    registerInline(saved)
+    return { dataUrl, contentId: saved.contentId }
+  }
+
+  /** 工具栏「插入图片」：选文件 → 落成内嵌附件 */
+  const pickInlineImage = async (): Promise<{ dataUrl: string; contentId: string } | null> => {
+    const picked = await api.attachments.pickImageAsDataUrl()
+    if (!picked) return null
+    const comma = picked.dataUrl.indexOf(',')
+    if (comma === -1) return null
+    const saved = await api.attachments.savePastedImage({
+      filename: picked.filename,
+      contentType: picked.contentType,
+      dataBase64: picked.dataUrl.slice(comma + 1)
+    })
+    if (!saved || !saved.contentId) return null
+    registerInline(saved)
+    return { dataUrl: picked.dataUrl, contentId: saved.contentId }
+  }
+
   const addAttachments = async (): Promise<void> => {
     const picked = await api.attachments.pick()
     if (!picked.length) return
@@ -286,7 +363,14 @@ export default function Composer(props: Props): JSX.Element {
 
   const buildPayload = (saveAsDraft: boolean): ComposePayload => {
     // 富文本模式从 DOM 里现取现算：正文没走受控组件，状态里那份可能落后
-    const html = rich ? (editorRef.current?.getHtml() ?? htmlRef.current) : null
+    const rawHtml = rich ? (editorRef.current?.getHtml() ?? htmlRef.current) : null
+    /**
+     * 内嵌图片：编辑器里为了能显示，src 是 data URL（几百 KB 的 base64）。
+     * 真正发出去的邮件不能这样 —— 得把 src 换成 `cid:<contentId>`，
+     * MIME 里再带一个 Content-ID 对应的内嵌附件，收件端才会把图显示在正文里。
+     * 存草稿时保留 data URL（否则重新打开草稿看不到图）。
+     */
+    const html = rawHtml ? inlineImagesToCid(rawHtml, saveAsDraft) : null
     const text = rich ? htmlToPlainText(html ?? '') : form.body
     return {
       accountId: form.accountId,
@@ -354,8 +438,59 @@ export default function Composer(props: Props): JSX.Element {
     props.onClose()
   }
 
+  /** 拖文件进写信窗口：整窗任意位置都能放下，不必精确拖到附件条上 */
+  const [dragOver, setDragOver] = useState(false)
+  const handleDrop = async (e: React.DragEvent): Promise<void> => {
+    e.preventDefault()
+    setDragOver(false)
+    const files = Array.from(e.dataTransfer.files ?? [])
+    if (!files.length) return
+    // File.path 在新版 Electron 里没了，必须走 webUtils.getPathForFile
+    const paths: string[] = []
+    for (const f of files) {
+      try {
+        const p = api.attachments.pathForFile(f)
+        if (p) paths.push(p)
+      } catch {
+        /* 拖的是网页里的东西（没有本地路径），忽略 */
+      }
+    }
+    if (!paths.length) return
+    const { files: added, missing } = await api.attachments.addPaths(paths)
+    if (added.length) {
+      const existing = new Set(form.attachments.map((a) => a.path))
+      patch({ attachments: [...form.attachments, ...added.filter((a) => !existing.has(a.path))] })
+    }
+    if (missing.length) {
+      props.onError(`有 ${missing.length} 个文件没能加上（不存在或不是普通文件）`)
+    }
+  }
+
   return (
-    <div className="overlay">
+    <div
+      className={`overlay${dragOver ? ' dragover' : ''}`}
+      onDragOver={(e) => {
+        // 必须 preventDefault，否则浏览器会拒绝这个放置目标
+        if (e.dataTransfer.types.includes('Files')) {
+          e.preventDefault()
+          e.dataTransfer.dropEffect = 'copy'
+          if (!dragOver) setDragOver(true)
+        }
+      }}
+      onDragLeave={(e) => {
+        // 只有真正离开整个写信窗口才取消高亮（在子元素之间移动也会触发 leave）
+        if (e.currentTarget === e.target) setDragOver(false)
+      }}
+      onDrop={(e) => void handleDrop(e)}
+    >
+      {dragOver && (
+        <div className="dropmask">
+          <div className="droptip">
+            <Icon name="paperclip" size={26} />
+            <div>松手即添加到附件</div>
+          </div>
+        </div>
+      )}
       <div className="dialog" style={{ width: '78vw', maxWidth: 980, height: '82vh' }}>
         <div className="dialog-head">
           <span>{form.draftId ? '编辑草稿' : '写邮件'}</span>
@@ -441,9 +576,14 @@ export default function Composer(props: Props): JSX.Element {
             <input value={form.subject} onChange={(e) => patch({ subject: e.target.value })} />
           </div>
 
-          {form.attachments.length > 0 && (
+          {/*
+            附件条只列**真正的附件**。内嵌图片（正文里的图）不在这里露面：
+            它属于正文，删除它的正确入口是点中图片后按「删除图片」，
+            混进附件条会让人以为删掉一个“附件”就能把正文里的图去掉。
+          */}
+          {form.attachments.some((a) => !a.isInline) && (
             <div className="attachbar" style={{ borderBottom: '1px solid var(--border)' }}>
-              {form.attachments.map((a, i) => (
+              {form.attachments.map((a, i) => a.isInline ? null : (
                 <span className="attachchip" key={`${a.path}-${i}`}>
                   <Icon name="paperclip" size={13} />
                   <span className="fname">{a.filename}</span>
@@ -451,7 +591,7 @@ export default function Composer(props: Props): JSX.Element {
                     className="iconbtn"
                     title="移除"
                     onClick={() =>
-                      patch({ attachments: form.attachments.filter((_, idx) => idx !== i) })
+                      patch({ attachments: form.attachments.filter((x) => x.path !== a.path) })
                     }
                   >
                     <Icon name="close" size={11} />
@@ -467,6 +607,8 @@ export default function Composer(props: Props): JSX.Element {
                 ref={editorRef}
                 initialHtml={htmlRef.current}
                 onNotify={props.onError}
+                onSaveImage={saveInlineImage}
+                onPickImage={pickInlineImage}
                 onChange={() => {
                   setDirty(true)
                 }}

@@ -172,6 +172,14 @@ export interface ComposeAttachment {
   path: string
   filename: string
   contentType?: string
+  /**
+   * 内嵌图片的 Content-ID（不含尖括号）。
+   * 正文里用 `<img src="cid:这个值">` 引用它，收件端才会把图片显示在正文里，
+   * 而不是当成一个附件列出来。
+   */
+  contentId?: string
+  /** 是不是内嵌图片（正文的一部分）—— 内嵌图不计入列表的「含附件」标记 */
+  isInline?: boolean
 }
 
 export interface SendResult {

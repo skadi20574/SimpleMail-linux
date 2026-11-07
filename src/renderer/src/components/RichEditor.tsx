@@ -16,7 +16,7 @@
  */
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { escapeHtml, plainToHtml, sanitizeRichHtml } from '../richtext'
+import { dataUrlToFile, escapeHtml, plainToHtml, sanitizeRichHtml } from '../richtext'
 
 export interface RichEditorHandle {
   /** 当前正文的 HTML */
@@ -24,6 +24,11 @@ export interface RichEditorHandle {
   /** 整段替换内容；caret 决定光标落到开头还是结尾 */
   setHtml(html: string, caret?: 'start' | 'end'): void
   focus(): void
+}
+
+export interface InlineImage {
+  dataUrl: string
+  contentId: string
 }
 
 interface Props {
@@ -34,6 +39,14 @@ interface Props {
   /** 需要提示用户时调用（例如粘贴的图片被丢掉） */
   onNotify: (message: string) => void
   placeholder?: string
+  /**
+   * 把剪贴板里粘贴出来的图片变成内嵌附件。
+   * 返回 dataUrl（编辑器里直接显示）与 contentId（发信时改成 cid:）。
+   * 返回 null 表示存不下来（太大/不是图片），编辑器会提示。
+   */
+  onSaveImage: (file: File) => Promise<InlineImage | null>
+  /** 工具栏「插入图片」：父组件负责弹选择器、落盘并返回可插入的图片 */
+  onPickImage: () => Promise<InlineImage | null>
 }
 
 const COLORS: { label: string; value: string }[] = [
@@ -62,6 +75,8 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor(
   const savedRange = useRef<Range | null>(null)
   const [active, setActive] = useState<Record<string, boolean>>({})
   const [empty, setEmpty] = useState(!props.initialHtml)
+  /** 当前点中的图片：用于显示「显示比例」小工具条 */
+  const [activeImg, setActiveImg] = useState<HTMLImageElement | null>(null)
   /**
    * 插入链接的小面板。
    *
@@ -206,6 +221,94 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor(
     }
     saveSelection()
     refreshActive()
+    syncEmpty()
+    props.onChange()
+  }
+
+  /**
+   * 把一张图片插到光标处。
+   *
+   * 编辑器里显示的是 data URL（浏览器能直接画出来），同时带上 data-cid ——
+   * 发信前 buildPayload 会把 src 换成 `cid:...`，邮件里就变成标准的内嵌图片
+   * （Content-ID），收件端显示在正文里而不是挂成附件。
+   */
+  const insertImage = (img: InlineImage, alt: string): void => {
+    restoreSelection()
+    const width = 'max-width:100%'
+    document.execCommand(
+      'insertHTML',
+      false,
+      `<img src="${img.dataUrl}" data-cid="${img.contentId}" alt="${escapeHtml(alt)}" ` +
+        `style="${width}">`
+    )
+    saveSelection()
+    syncEmpty()
+    props.onChange()
+  }
+
+  /** 处理「粘贴图片」：剪贴板里带图片文件就走这条路 */
+  const pasteImageFile = async (file: File): Promise<void> => {
+    const saved = await props.onSaveImage(file)
+    if (!saved) {
+      props.onNotify('这张图片没能处理（可能是格式不支持或超过 20MB）')
+      return
+    }
+    insertImage(saved, file.name || '图片')
+  }
+
+  /**
+   * 把一段 HTML 里的 data: 图片收编成内嵌附件。
+   *
+   * 从 Word / Gmail / 网页里整段复制时，图片常常以 base64 内联在 HTML 里。
+   * 这种图直接发出去收件端会屏蔽掉（data: 图片普遍被拦），
+   * 所以先落盘成 Content-ID 内嵌附件，正文里只留 cid: 引用。
+   */
+  const adoptDataImages = async (html: string): Promise<string> => {
+    if (!/src\s*=\s*["']data:image\//i.test(html)) return html
+    const tpl = document.createElement('template')
+    tpl.innerHTML = html
+    let n = 0
+    for (const img of Array.from(tpl.content.querySelectorAll('img'))) {
+      const src = img.getAttribute('src') ?? ''
+      if (!/^data:image\//i.test(src) || img.getAttribute('data-cid')) continue
+      const file = dataUrlToFile(src, `粘贴的图片-${++n}.png`)
+      if (!file) continue
+      const saved = await props.onSaveImage(file)
+      if (!saved) continue
+      img.setAttribute('data-cid', saved.contentId)
+      img.setAttribute('src', saved.dataUrl)
+    }
+    return tpl.innerHTML
+  }
+
+  /** 工具栏「插入图片」 */
+  const pickImage = async (): Promise<void> => {
+    const saved = await props.onPickImage()
+    if (!saved) return
+    insertImage(saved, '图片')
+  }
+
+  /** 给选中的图片设显示比例（百分比；空字符串表示恢复原尺寸） */
+  const setImageWidth = (percent: string): void => {
+    const img = activeImg
+    if (!img) return
+    if (!percent) {
+      img.style.removeProperty('width')
+      img.style.removeProperty('max-width')
+      img.removeAttribute('data-smw')
+    } else {
+      img.style.width = `${percent}%`
+      img.style.maxWidth = '100%'
+      img.setAttribute('data-smw', percent)
+    }
+    props.onChange()
+  }
+
+  const removeImage = (): void => {
+    const img = activeImg
+    if (!img) return
+    img.remove()
+    setActiveImg(null)
     syncEmpty()
     props.onChange()
   }
@@ -360,11 +463,58 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor(
         >
           链接
         </button>
+        <button
+          type="button"
+          className="rtbtn"
+          title="插入图片（截图/图片文件）"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => void pickImage()}
+        >
+          插入图片
+        </button>
         {Btn({ cmd: 'removeFormat', label: '清除格式', title: '去掉选中文字的格式' })}
         <span className="rtsep" />
         {Btn({ cmd: 'undo', label: '撤销', title: '撤销（Ctrl+Z）' })}
         {Btn({ cmd: 'redo', label: '重做', title: '重做（Ctrl+Y）' })}
       </div>
+
+      {/*
+        点中正文里的图片时，这里给出「显示比例」。用百分比而不是拖拽手柄：
+        收件端的窗口宽度跟我们看到的不一样，百分比在任何宽度下都不会溢出。
+      */}
+      {activeImg && (
+        <div className="rtimgbar">
+          <span>图片显示比例</span>
+          {['25', '50', '75', '100'].map((p) => (
+            <button
+              key={p}
+              type="button"
+              className={`rtbtn${activeImg.getAttribute('data-smw') === p ? ' on' : ''}`}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setImageWidth(p)}
+            >
+              {p}%
+            </button>
+          ))}
+          <button
+            type="button"
+            className="rtbtn"
+            title="恢复图片原始尺寸"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => setImageWidth('')}
+          >
+            原尺寸
+          </button>
+          <button
+            type="button"
+            className="rtbtn danger"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={removeImage}
+          >
+            删除图片
+          </button>
+        </div>
+      )}
 
       <div
         className="rtbody"
@@ -387,6 +537,22 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor(
           saveSelection()
           refreshActive()
         }}
+        onClick={(e) => {
+          const t = e.target as HTMLElement
+          if (t && t.tagName === 'IMG') {
+            // 让图片知道「我被选中了」：加个类方便调比例时高亮
+            const img = t as HTMLImageElement
+            const root = editorRef.current
+            for (const prev of Array.from(root?.querySelectorAll('img.rtimg-sel') ?? [])) {
+              prev.classList.remove('rtimg-sel')
+            }
+            img.classList.add('rtimg-sel')
+            setActiveImg(img)
+          } else if (activeImg) {
+            activeImg.classList.remove('rtimg-sel')
+            setActiveImg(null)
+          }
+        }}
         onBlur={saveSelection}
         onPaste={(e) => {
           // 自己接管粘贴：外面来的 HTML 一律清洗
@@ -394,32 +560,53 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor(
           // 先把焦点和插入点找回来：execCommand 只对「当前焦点」生效，
           // 万一编辑器不是焦点（例如先点了别处再右键粘贴），内容会插到空处。
           restoreSelection()
+          // 先把剪贴板里的图片挑出来：截图工具、网页里右键「复制图片」、
+          // 文件管理器里复制的图片文件，都会以 File 的形式出现在这里。
+          const imageFiles: File[] = []
+          for (const item of Array.from(e.clipboardData.items ?? [])) {
+            if (item.kind !== 'file') continue
+            if (!item.type.startsWith('image/')) continue
+            const f = item.getAsFile()
+            if (f) imageFiles.push(f)
+          }
+          if (imageFiles.length) {
+            void (async () => {
+              for (const f of imageFiles) await pasteImageFile(f)
+            })()
+            return
+          }
           const html = e.clipboardData.getData('text/html')
           const text = e.clipboardData.getData('text/plain')
           if (html) {
             const res = sanitizeRichHtml(html)
-            document.execCommand('insertHTML', false, res.html)
-            if (res.droppedImages) {
-              props.onNotify('粘贴内容里的图片没有带进来 —— 正文插图请用「添加附件」')
-            }
-            if (res.droppedBlocks) {
-              props.onNotify('粘贴内容里的脚本/内嵌框架已被丢弃')
-            }
-          } else if (text) {
+            void (async () => {
+              // 顺便把 HTML 里内联的 base64 图片落成内嵌附件（这一步是异步的，
+              // 所以先让事件返回，再回来插入内容）
+              const cleaned = await adoptDataImages(res.html)
+              restoreSelection()
+              document.execCommand('insertHTML', false, cleaned)
+              if (res.droppedImages) {
+                props.onNotify(
+                  '粘贴内容里的网络图片没有带进来（会变成跟踪像素）—— 请先把图片存成文件再用「插入图片」'
+                )
+              }
+              if (res.droppedBlocks) {
+                props.onNotify('粘贴内容里的脚本/内嵌框架已被丢弃')
+              }
+              saveSelection()
+              syncEmpty()
+              props.onChange()
+            })()
+            return
+          }
+          if (text) {
             document.execCommand('insertHTML', false, plainToHtml(text))
           }
           saveSelection()
           syncEmpty()
           props.onChange()
         }}
-        onDrop={(e) => {
-          // 往正文里拖文件当成「往邮件里插外部资源」，一律不理，
-          // 但要说清楚，否则用户以为拖进来的东西发出去了
-          if (e.dataTransfer.files.length) {
-            e.preventDefault()
-            props.onNotify('拖着文件进正文不会自动加附件 —— 请用「添加附件」按钮')
-          }
-        }}
+
       />
     </div>
   )

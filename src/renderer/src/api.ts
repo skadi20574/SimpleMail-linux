@@ -113,6 +113,26 @@ interface RawApi {
     open(id: number): Promise<{ ok: boolean; error?: string }>
     reveal(id: number): Promise<{ ok: boolean }>
     pick(): Promise<(ComposeAttachment & { size: number })[]>
+    /** 粘贴/插入的图片：落盘成内嵌附件（返回带 contentId 的 ComposeAttachment） */
+    savePastedImage(input: {
+      filename: string
+      contentType: string
+      dataBase64: string
+    }): Promise<ComposeAttachment | null>
+    /** 选一张本地图片并读成 data URL */
+    pickImageAsDataUrl(): Promise<{
+      dataUrl: string
+      filename: string
+      contentType: string
+      size: number
+    } | null>
+    /** 拖进来的文件 → 附件元数据（主进程做存在性校验） */
+    addPaths(paths: string[]): Promise<{
+      files: (ComposeAttachment & { size?: number })[]
+      missing: string[]
+    }>
+    /** 取系统拖拽进来的 File 的真实路径 */
+    pathForFile(file: File): string
   }
   sync: {
     start(accountId: number): Promise<{ ok: boolean; error?: string; already?: boolean }>

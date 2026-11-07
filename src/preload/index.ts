@@ -3,7 +3,7 @@
  * 渲染进程没有 Node 集成，只能调用这里列出的方法。
  */
 
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { ExportProgress, ImportProgress, SyncProgress } from '@shared/types'
 import type { DataDirProgress, MailtoDelivery } from '@shared/types'
 
@@ -66,7 +66,16 @@ const api = {
     saveAs: (id: number) => invoke('attachments:saveAs', id),
     open: (id: number) => invoke('attachments:open', id),
     reveal: (id: number) => invoke('attachments:reveal', id),
-    pick: () => invoke('attachments:pick')
+    pick: () => invoke('attachments:pick'),
+    /** 粘贴/插入的图片：落盘成内嵌附件（返回带 contentId 的 ComposeAttachment） */
+    savePastedImage: (input: { filename: string; contentType: string; dataBase64: string }) =>
+      invoke('attachments:savePastedImage', input),
+    /** 选一张本地图片并读成 data URL（编辑器里直接显示） */
+    pickImageAsDataUrl: () => invoke('attachments:pickImageAsDataUrl'),
+    /** 从文件管理器拖进来的文件 → 附件元数据（含存在性校验） */
+    addPaths: (paths: string[]) => invoke('attachments:addPaths', paths),
+    /** 取一个由系统拖拽进来的 File 的真实路径（Electron 30+ 用 webUtils） */
+    pathForFile: (file: File) => webUtils.getPathForFile(file)
   },
   sync: {
     start: (accountId: number) => invoke('sync:start', accountId),

@@ -1072,6 +1072,62 @@ input.rowcheck {
   z-index: 100;
 }
 
+/* 存档任务最小化后的小条：固定在右下角，不挡任何操作 */
+.jobpill {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 12.5px;
+  max-width: 60vw;
+}
+
+.jobpill .jobtext {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 拖文件进写信窗口时的提示层 */
+.overlay.dragover {
+  outline: 2px dashed var(--accent);
+  outline-offset: -6px;
+}
+
+.dropmask {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--overlay);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.droptip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 22px 34px;
+  border: 2px dashed var(--accent);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--accent);
+  font-size: 14px;
+  box-shadow: var(--shadow);
+}
+
 .dialog {
   max-width: calc(100vw - 28px);
   background: var(--panel);
@@ -1481,7 +1537,37 @@ input.rowcheck {
   margin: 8px 0 0 0;
   padding-left: 12px;
   border-left: 3px solid var(--border-strong);
+  /* 引用文字用正文颜色：以前用 --text-2，深色主题下整段都是灰的，
+     用户反馈「颜色灰不拉几」。层级靠竖线和缩进表达就够了。 */
+  color: inherit;
+}
+
+/* 正文里的图片：默认不超出栏宽；点中时加描边，方便看出选中了哪张 */
+.rtbody img {
+  max-width: 100%;
+  height: auto;
+}
+
+.rtbody img.rtimg-sel {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 图片显示比例小工具条 */
+.rtimgbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--accent-soft);
   color: var(--text-2);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+
+.rtbtn.danger {
+  color: var(--danger);
 }
 
 .rtbody a {

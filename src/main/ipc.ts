@@ -4,7 +4,17 @@
  */
 
 import { ipcMain, dialog, shell, BrowserWindow, Menu, app } from 'electron'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { dirname as pathDirname } from 'node:path'
 import { join } from 'node:path'
@@ -22,6 +32,7 @@ import type {
 import * as repo from './db/repo'
 import { closeDb, getDb } from './db'
 import { appPaths } from './paths'
+import { guessImageType, hasRealAttachments } from '@shared/attachments'
 import { closeMailWindow, openMailWindow } from './windows'
 import { loadSettings, saveSettings } from './settings'
 import { messageAttachmentDir, safeFilename } from './mail/attachments'
@@ -52,7 +63,7 @@ import {
 import { openArchive, inspectArchive } from './foxmail/archive'
 import { importArchive } from './foxmail/importer'
 import { exportArchive } from './foxmail/exporter'
-import { mailtoStatus, setMailtoDefault } from './mailto'
+import { mailtoStatus, resolveMailtoAttachments, setMailtoDefault } from './mailto'
 import { diag } from './diagnostics'
 import {
   checkDataDirTarget,
@@ -142,13 +153,33 @@ async function handleSend(_e: Sender, payload: ComposePayload): Promise<unknown>
   }
 
   const attachments = (payload.attachments ?? []).filter((a) => existsSync(a.path))
+
+  // 开发辅助：自检时要确认「内嵌图片确实以 cid: 交给 MIME 层」。
+  // 只在跑富文本自检时打印一行，正常使用没有任何输出。
+  if (process.env.SIMPLEMAIL_SHOT_RICHTEST) {
+    const cids = attachments.filter((a) => a.contentId).map((a) => a.contentId)
+    const imgs = [...(payload.html ?? '').matchAll(/<img[^>]*src="([^"]{0,40})/g)].map((m) => m[1])
+    // eslint-disable-next-line no-console
+    console.log(
+      '[SimpleMail] 发送载荷自检：',
+      JSON.stringify({
+        htmlHasDataUrl: /<img[^>]*src="data:/.test(payload.html ?? ''),
+        imgSrcPrefixes: imgs,
+        inlineCids: cids,
+        attachmentCount: attachments.length
+      })
+    )
+  }
   const outcome = await sendMail(
     account,
     payload,
     attachments.map((a) => ({
       filename: a.filename,
       path: a.path,
-      contentType: a.contentType
+      contentType: a.contentType,
+      // 内嵌图片：把 contentId 传给 nodemailer，它才会写 Content-ID 头，
+      // 正文里的 <img src="cid:xxx"> 才能被收件端认出来
+      ...(a.contentId ? { cid: a.contentId } : {})
     }))
   )
 
@@ -184,7 +215,7 @@ async function handleSend(_e: Sender, payload: ComposePayload): Promise<unknown>
     size: outcome.raw.length,
     unread: false,
     flagged: false,
-    hasAttachments: attachments.length > 0,
+    hasAttachments: hasRealAttachments(attachments),
     source: 'local'
   })
 
@@ -256,7 +287,7 @@ async function handleSaveDraft(_e: Sender, payload: ComposePayload): Promise<unk
     size: bodyText.length,
     unread: false,
     flagged: false,
-    hasAttachments: (payload.attachments ?? []).length > 0,
+    hasAttachments: hasRealAttachments(payload.attachments ?? []),
     source: 'local'
   })
 
@@ -299,8 +330,10 @@ async function attachPickedFiles(
       filename: f.filename,
       contentType: f.contentType ?? 'application/octet-stream',
       size,
-      contentId: null,
-      isInline: false,
+      // 内嵌图片要留住 contentId + inline 标记，否则重新打开这封邮件时
+      // 正文里的 cid: 图片就显示不出来、而且会多出一个「附件」
+      contentId: f.contentId ?? null,
+      isInline: Boolean(f.isInline),
       storedPath: target
     })
   }
@@ -653,6 +686,73 @@ export function registerIpc(): void {
       }
       return { path: p, filename: p.split('/').pop() ?? 'attachment', size }
     })
+  })
+
+  /**
+   * 把粘贴/插入的图片落到临时目录，返回一个内嵌附件。
+   *
+   * 为什么落盘而不是留在正文里：邮件要发的是一封**干净**的 HTML，
+   * 图片得作为 Content-ID 内嵌附件走 MIME（正文里只留 cid: 引用）。
+   * 留在库里就是几百 KB 的 base64 —— 之前那个 885MB 的教训。
+   *
+   * 落到 compose-tmp 之后，发信/存草稿时由 attachPickedFiles 复制进正式的
+   * 附件目录；compose-tmp 每次启动清空。
+   */
+  ipcMain.handle(
+    'attachments:savePastedImage',
+    (
+      _e,
+      input: { filename: string; contentType: string; dataBase64: string }
+    ): ComposeAttachment | null => {
+      try {
+        const buf = Buffer.from(input.dataBase64, 'base64')
+        if (!buf.length) return null
+        // 单张图上限 20MB：再大的多半是误粘贴了一个巨大文件
+        if (buf.length > 20 * 1024 * 1024) return null
+        const dir = composeTmpDir()
+        mkdirSync(dir, { recursive: true })
+        const filename = safeFilename(input.filename || 'image.png') || 'image.png'
+        const target = join(dir, `${randomUUID().slice(0, 8)}_${filename}`)
+        writeFileSync(target, buf)
+        return {
+          path: target,
+          filename,
+          contentType: input.contentType || 'image/png',
+          contentId: `${randomUUID()}@simplemail`,
+          isInline: true
+        }
+      } catch {
+        return null
+      }
+    }
+  )
+
+  /** 点「插入图片」时选一张本地图片，读成 data URL 交给编辑器显示 */
+  ipcMain.handle('attachments:pickImageAsDataUrl', async () => {
+    const result = await dialog.showOpenDialog({
+      title: '插入图片',
+      properties: ['openFile'],
+      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] }]
+    })
+    if (result.canceled || !result.filePaths.length) return null
+    return readImageAsDataUrl(result.filePaths[0])
+  })
+
+  /**
+   * 从文件管理器拖进来的文件 → 附件列表。
+   * 和 mailto 那条路一样要做存在性校验：拖进来的目录、已删除的文件都要报出来，
+   * 否则用户以为附上了，实际什么都没发。
+   */
+  ipcMain.handle('attachments:addPaths', (_e, paths: string[]) => {
+    const resolved = resolveMailtoAttachments(paths ?? [])
+    return {
+      files: resolved.files.map((f) => ({
+        path: f.path,
+        filename: f.filename,
+        contentType: guessImageType(f.filename)
+      })),
+      missing: resolved.missing
+    }
   })
 
   ipcMain.handle('sync:start', handleSyncStart)
@@ -1062,4 +1162,44 @@ export function registerIpc(): void {
 
   // 启动时确保导出目录存在
   mkdirSync(appPaths().exports, { recursive: true })
+}
+
+/* ─────────────── 写信窗口用到的图片/拖拽小工具 ─────────────── */
+
+/**
+ * 粘贴/插入图片的临时落点。
+ *
+ * 刻意放在 userData 下而不是系统 /tmp：/tmp 在不少发行版上是 tmpfs，
+ * 重启就没了；而且这个目录每次启动都会清空，不会越攒越大。
+ */
+function composeTmpDir(): string {
+  return join(appPaths().userData, 'compose-tmp')
+}
+
+/** 启动时清掉上次残留的粘贴图片 */
+export function cleanComposeTmp(): void {
+  try {
+    rmSync(composeTmpDir(), { recursive: true, force: true })
+  } catch {
+    /* 清不掉就算了，不影响使用 */
+  }
+}
+
+/** 读一张本地图片并编码成 data URL，交给编辑器直接显示 */
+function readImageAsDataUrl(
+  path: string
+): { dataUrl: string; filename: string; contentType: string; size: number } | null {
+  try {
+    const st = statSync(path)
+    if (!st.isFile()) return null
+    // 20MB 上限：放进正文的图不应该比这更大（再大就该走附件）
+    if (st.size > 20 * 1024 * 1024) return null
+    const filename = path.split('/').pop() ?? 'image.png'
+    const contentType = guessImageType(filename) ?? 'application/octet-stream'
+    if (!contentType.startsWith('image/')) return null
+    const dataUrl = `data:${contentType};base64,${readFileSync(path).toString('base64')}`
+    return { dataUrl, filename, contentType, size: st.size }
+  } catch {
+    return null
+  }
 }

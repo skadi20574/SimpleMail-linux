@@ -24,7 +24,13 @@ interface MailOptionsLike {
   html?: string
   inReplyTo?: string
   references?: string
-  attachments: { filename: string; path: string; contentType?: string }[]
+  attachments: {
+    filename: string
+    path: string
+    contentType?: string
+    /** 内嵌图片的 Content-ID：有了它 nodemailer 才会写 Content-ID 头，正文的 cid: 才认 */
+    cid?: string
+  }[]
 }
 
 function makeTransport(account: Account): nodemailer.Transporter {
