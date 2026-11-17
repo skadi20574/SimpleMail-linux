@@ -255,6 +255,12 @@ function attachScreenshotHook(win: BrowserWindow): void {
                   addrSuggest: [...document.querySelectorAll('.addrsug-item')]
                     .map(el => (el.textContent || '').trim()),
                   addrToValue: (document.querySelector('.addr-to')?.value ?? ''),
+                  // 收件人现在是标签形式：把每个标签的文字与悬停标题都记下来
+                  addrChips: [...document.querySelectorAll('.addrchips .addrchip')].map(el => ({
+                    label: (el.querySelector('.addrchip-label')?.textContent || '').trim(),
+                    full: el.getAttribute('title') || '',
+                    hasX: Boolean(el.querySelector('.addrchip-x'))
+                  })),
                   previewSubject: (document.querySelector('.preview-subject')?.textContent || '').trim(),
                   previewId: (() => {
                     const a = document.querySelector('.mailrow.active')
@@ -464,6 +470,44 @@ function attachScreenshotHook(win: BrowserWindow): void {
                   pass.比例50已生效 = (imgEl.getAttribute('style') || '').includes('50%')
                   pass.图片比例已记录 = imgEl.getAttribute('data-smw') === '50'
                 }
+                // ── 收件人标签：删除、回车添加 ──
+                const toBox = document.querySelector('.addrfield-to')
+                const chipCount = () => document.querySelectorAll('.addrfield-to .addrchip').length
+                pass.收件人显示为标签 = chipCount() > 0
+                const before = chipCount()
+                const xBtn = document.querySelector('.addrfield-to .addrchip-x')
+                if (xBtn) {
+                  xBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
+                  xBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+                  await tick()
+                }
+                pass.点叉能删掉标签 = chipCount() === before - 1
+                const toInput = document.querySelector('.addr-to')
+                const setterV = Object.getOwnPropertyDescriptor(
+                  window.HTMLInputElement.prototype,
+                  'value'
+                ).set
+                setterV.call(toInput, 'new@example.com')
+                toInput.dispatchEvent(new Event('input', { bubbles: true }))
+                await tick()
+                toInput.dispatchEvent(
+                  new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+                )
+                await tick()
+                pass.回车把地址变成标签 = [...document.querySelectorAll('.addrfield-to .addrchip')]
+                  .some(el => (el.getAttribute('title') || '').includes('new@example.com'))
+                pass.输入框已清空 = toInput.value === ''
+
+                // 正在输入、还没回车的那一段，必须立刻同步给上层 ——
+                // 否则 Ctrl+Enter 直接发送会静默少一个收件人
+                setterV.call(toInput, 'half@typed.com')
+                toInput.dispatchEvent(new Event('input', { bubbles: true }))
+                await tick()
+                pass.未回车也同步到上层 = Boolean(
+                  document.querySelector('.addrfield-to') &&
+                    (document.querySelector('.addr-to') || {}).value === 'half@typed.com'
+                )
+
                 // 点发送：主进程会打印这一封的载荷（html 里还有没有 data:、附件 cid）
                 const sendBtn = [...document.querySelectorAll('.dialog-foot .btn')]
                   .find(b => b.textContent.includes('发送'))
@@ -493,6 +537,25 @@ function attachScreenshotHook(win: BrowserWindow): void {
                 pass.字号生效 = formatted.includes('font-size:')
                 pass.颜色生效 = formatted.includes('color: rgb(30, 142, 62)')
                 pass.保留正文 = body.innerText.split(/\\s/).join('').includes('甲乙丙丁戊')
+
+                // ── Tab 缩进 ──
+                body.innerHTML = '<div>缩进测试</div>'
+                pick('缩进测试')
+                body.dispatchEvent(
+                  new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+                )
+                await tick()
+                pass.Tab插入缩进 = body.innerHTML.includes('&nbsp;')
+                body.dispatchEvent(
+                  new KeyboardEvent('keydown', {
+                    key: 'Tab',
+                    shiftKey: true,
+                    bubbles: true,
+                    cancelable: true
+                  })
+                )
+                await tick()
+                pass.ShiftTab退掉缩进 = !body.innerHTML.includes('&nbsp;')
 
                 body.innerHTML = '<div>第一项</div>'
                 pick('第一项'); pass.列表 = click(btnText('• 列表'))

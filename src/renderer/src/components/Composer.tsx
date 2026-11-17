@@ -68,12 +68,11 @@ export function buildReplyInit(
   selfAddress = ''
 ): ComposeInit {
   /**
-   * 签名放在**最下面**，正文开头留空给光标。
+   * 版式：第一行空着（光标在这）→ 签名 → 引用原文。
    *
-   * 以前签名在正文最前面（纯文本时代就是那样拼的），到了富文本编辑器里就变成
-   * 「点了回复，光标停在签名上方，签名挡在要写字的头顶上」——
-   * 用户的实际感受是「光标位置不对」。现在统一成：
-   *   第一行空着（光标在这里闪）→ 引用原文 → 签名。
+   * 签名要贴在**引用内容的上方**：写完正文，紧接着就是落款，
+   * 后面才是被引用的原邮件。1.2.7 一开始把签名放到了最下面（引用之后），
+   * 用户反馈「签名应该在引用内容的上方」，所以这里改回来。
    */
   const sig = signature ? `\n\n--\n${signature}` : ''
   const headLines = [
@@ -102,7 +101,7 @@ export function buildReplyInit(
   /** 开头那个空行：光标就落在这里，用户直接开始写 */
   const TOP_LINE = '<div><br></div>'
   const htmlFor = (header: string, body: string): string =>
-    `${TOP_LINE}${header ? `<div style="color:inherit;font-size:12px">${header}</div>` : ''}${quoteHtml(body)}${sigHtml}`
+    `${TOP_LINE}${sigHtml}${header ? `<div style="color:inherit;font-size:12px">${header}</div>` : ''}${quoteHtml(body)}`
 
   if (mode === 'forward') {
     /**
@@ -125,7 +124,7 @@ export function buildReplyInit(
       cc: '',
       bcc: '',
       subject: forwardSubject(mail.subject),
-      body: `\n\n${quotedHeader}${mail.bodyText || ''}${sig}`,
+      body: `\n\n${sig}\n\n${quotedHeader}${mail.bodyText || ''}`,
       html: htmlFor(headerHtml, mail.bodyText || ''),
       attachments: carried
     }
@@ -150,7 +149,7 @@ export function buildReplyInit(
     cc: shortAddress(cc),
     bcc: '',
     subject: replySubject(mail.subject),
-    body: `\n\n${quotedHeader}${quotedBody}${sig}`,
+    body: `\n\n${sig}\n\n${quotedHeader}${quotedBody}`,
     html: htmlFor(headerHtml, mail.bodyText || ''),
     inReplyTo: mail.messageId,
     references: mail.references ?? mail.messageId,
@@ -255,7 +254,11 @@ export default function Composer(props: Props): JSX.Element {
       // 富文本：从 DOM 里拿当前 HTML，摘掉旧签名块，把新签名放在最前面
       const current = editorRef.current?.getHtml() ?? htmlRef.current
       const body = stripSignatureHtml(current)
-      const nextHtml = `${signatureHtml(next.signature ?? '')}${body}`
+      // 签名插在开头那行空行**之后**：第一行仍然留给光标
+      const lead = /^<div><br><\/div>/i.exec(body)
+      const nextHtml = lead
+        ? `${lead[0]}${signatureHtml(next.signature ?? '')}${body.slice(lead[0].length)}`
+        : `${signatureHtml(next.signature ?? '')}${body}`
       htmlRef.current = nextHtml
       textRef.current = htmlToPlainText(nextHtml)
       editorRef.current?.setHtml(nextHtml, 'start')
@@ -270,8 +273,9 @@ export default function Composer(props: Props): JSX.Element {
       if (body.includes(marker)) body = body.replace(marker, '')
     }
     const newSig = next.signature ? `\n\n--\n${next.signature}` : ''
-    textRef.current = `${body}${newSig}`
-    patch({ accountId, body: `${body}${newSig}` })
+    // 签名跟着版式走：放在正文最前面（引用内容之前）
+    textRef.current = `${newSig}${body}`
+    patch({ accountId, body: `${newSig}${body}` })
   }
 
   /**

@@ -2417,6 +2417,28 @@ Subject: 导出删除 ${i}`,
       js.includes('getPathForFile') || js.includes('pathForFile'),
       js.includes('getPathForFile') || js.includes('pathForFile') ? '' : '拖拽文件加附件可能没接上'
     )
+
+    /* ── 1.2.8：收件人标签、Tab 缩进 ── */
+
+    const chipRule = ruleOf('.addrchip')
+    check('收件人地址标签有样式', chipRule !== null, chipRule ?? '找不到 .addrchip')
+    check(
+      '地址标签是圆角块（看得出是一个整体）',
+      Boolean(chipRule && chipRule.includes('border-radius')),
+      chipRule ?? ''
+    )
+    check('地址标签的删除叉有样式', ruleOf('.addrchip-x') !== null)
+    check(
+      '地址标签容器会折行（多个收件人不会挤出框外）',
+      Boolean(ruleOf('.addrchips')?.includes('flex-wrap: wrap')),
+      ruleOf('.addrchips') ?? ''
+    )
+    // Tab 缩进：正文里插的是 4 个不换行空格，产物里应该有这个字面量
+    check(
+      '产物里有 Tab 缩进的实现（4 个 &nbsp;）',
+      js.includes('&nbsp;&nbsp;'),
+      js.includes('&nbsp;&nbsp;') ? '' : '按 Tab 可能还是会把光标切走'
+    )
   }
 
 

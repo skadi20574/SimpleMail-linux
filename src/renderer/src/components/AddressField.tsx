@@ -1,13 +1,24 @@
 /**
- * 收件人输入框 + 地址簿联想。
+ * 收件人 / 抄送 / 密送输入框：地址做成一个个标签（chip），带地址簿联想。
  *
- * 为什么要单独抽出来：收件人/抄送/密送三个框的行为完全一样，
- * 写成三份就会各自漂移。这里把「解析当前正在输入的那一段 → 查地址簿 →
- * 点选后拼回去」封装起来。
+ * 为什么要改成标签而不是一行逗号分隔的文本：
+ *   · 一行文本里想删中间某个地址，得精确选中那几个字符再删 —— 很容易删错；
+ *   · 想改其中一个地址，得在一长串里先找到它。
+ * 现在每个地址是一个标签，标签上有 × 直接删；点标签文字可以拿回输入框里改。
+ *
+ * 对外契约没变：value 仍然是「逗号分隔的地址串」，上层 payload 逻辑一行不用改。
+ *
+ * ⚠️ onChange 在**每次输入**时都会触发，把「已确认的标签 + 输入框里正在敲的那段」
+ * 一起吐给上层，而不是等到回车/失焦才吐。原因：
+ *   Ctrl+Enter 直接发送是挂在 window 上的捕获监听，它会在输入框的 keydown
+ *   之前就跑完 —— 如果「正在敲的那一段」还没同步出去，这封信就会少一个收件人，
+ *   而且没有任何提示。宁可把没敲完的地址也带上（发送时会自然报错），
+ *   也不能静默地少发一个人。
  */
 
 import { useEffect, useRef, useState } from 'react'
 import { api, type Contact } from '../api'
+import { addressOf, splitAddressList } from '@shared/address'
 import Icon from './Icon'
 
 interface Props {
@@ -18,38 +29,83 @@ interface Props {
   name: string
 }
 
-/**
- * 取「最后一个逗号之后」那一段 —— 用户可能已经填了几个地址，
- * 联想只针对正在敲的那一个，不能把前面的也拿去查。
- */
-function currentToken(value: string): { head: string; token: string } {
-  const idx = Math.max(value.lastIndexOf(','), value.lastIndexOf(';'))
-  if (idx === -1) return { head: '', token: value }
-  return { head: value.slice(0, idx + 1), token: value.slice(idx + 1) }
-}
-
-/** 已经填进去的地址，联想时不再重复推荐 */
-function takenEmails(value: string): Set<string> {
-  const out = new Set<string>()
-  for (const part of value.split(/[,;]/)) {
-    const m = /<([^>]+)>/.exec(part)
-    const addr = (m ? m[1] : part).trim().toLowerCase()
-    if (addr.includes('@')) out.add(addr)
-  }
-  return out
+/** 标签上显示的文字：有显示名就只显示名字，鼠标悬停能看到完整地址 */
+function chipLabel(part: string): string {
+  const m = /^(.*?)<([^>]+)>$/.exec(part.trim())
+  if (m && m[1].trim()) return m[1].trim().replace(/^["']|["']$/g, '')
+  return addressOf(part) || part
 }
 
 export default function AddressField(props: Props): JSX.Element {
+  const [chips, setChips] = useState<string[]>(() => splitAddressList(props.value))
+  const [draft, setDraft] = useState('')
   const [suggestions, setSuggestions] = useState<Contact[]>([])
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(0)
   const boxRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
   const seqRef = useRef(0)
+  /** 最近一次「我们自己」吐出去的串：用来区分外部改动与自己的回声 */
+  const emittedRef = useRef(props.value)
 
-  const { head, token } = currentToken(props.value)
-  const query = token.trim()
+  // 外部改了 value（打开草稿、点回复、切换账户…）→ 重新切成标签
+  useEffect(() => {
+    if (props.value === emittedRef.current) return
+    emittedRef.current = props.value
+    setChips(splitAddressList(props.value))
+    setDraft('')
+  }, [props.value])
 
-  // 输入变化就去查地址簿（防抖，避免每敲一个字查一次库）
+  /** 标签 + 正在输入的那一段 → 一行地址串（上层看到的就是屏幕上这些） */
+  const serialize = (next: string[], draftText: string): string =>
+    [...next, draftText.trim()].filter(Boolean).join(', ')
+
+  const emit = (next: string[], draftText: string): void => {
+    const joined = serialize(next, draftText)
+    emittedRef.current = joined
+    props.onChange(joined)
+  }
+
+  /** 把输入框里的文字（可能一次粘进来好几个地址）变成标签 */
+  const commitDraft = (raw?: string): void => {
+    const text = (raw ?? draft).trim()
+    if (!text) return
+    const parts = splitAddressList(text)
+    const next = [...chips]
+    for (const p of parts) {
+      const t = p.trim()
+      if (!t) continue
+      // 同一个地址不重复加（大小写无关）
+      const addr = addressOf(t)
+      if (addr && next.some((c) => addressOf(c) === addr)) continue
+      next.push(t)
+    }
+    setChips(next)
+    setDraft('')
+    emit(next, '')
+  }
+
+  const removeChip = (index: number): void => {
+    const next = chips.filter((_, i) => i !== index)
+    setChips(next)
+    emit(next, draft)
+    inputRef.current?.focus()
+  }
+
+  /** 点标签文字：把它拿回输入框继续编辑 */
+  const editChip = (index: number): void => {
+    const part = chips[index]
+    if (!part) return
+    const next = chips.filter((_, i) => i !== index)
+    setChips(next)
+    emit(next, part)
+    setDraft(part)
+    setOpen(true)
+    window.setTimeout(() => inputRef.current?.focus(), 0)
+  }
+
+  // 联想：只查正在输入的这一段
+  const query = draft.trim()
   useEffect(() => {
     if (!open) return
     const seq = ++seqRef.current
@@ -59,16 +115,16 @@ export default function AddressField(props: Props): JSX.Element {
         .then((list) => {
           // 只接受最后一次查询的结果，防止慢请求覆盖新结果
           if (seq !== seqRef.current) return
-          const taken = takenEmails(props.value)
-          setSuggestions(list.filter((c) => !taken.has(c.email)).slice(0, 8))
+          const taken = new Set(chips.map((c) => addressOf(c)))
+          setSuggestions(list.filter((c) => !taken.has(c.email.toLowerCase())).slice(0, 8))
           setActive(0)
         })
         .catch(() => setSuggestions([]))
     }, 120)
     return () => window.clearTimeout(t)
-  }, [query, open, props.value])
+  }, [query, open, chips])
 
-  // 点别处收起
+  // 点别处收起联想
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent): void => {
@@ -80,47 +136,131 @@ export default function AddressField(props: Props): JSX.Element {
 
   const pick = (c: Contact): void => {
     const label = c.name ? `${c.name} <${c.email}>` : c.email
-    // 已有内容时补一个逗号分隔
-    const prefix = head ? `${head.replace(/\s*$/, '')} ` : ''
-    props.onChange(`${prefix}${label}, `)
+    const next = [...chips]
+    if (!next.some((x) => addressOf(x) === c.email.toLowerCase())) next.push(label)
+    setChips(next)
+    setDraft('')
+    emit(next, '')
     setOpen(false)
     setSuggestions([])
+    inputRef.current?.focus()
   }
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
-    if (!open || !suggestions.length) return
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      setActive((i) => (i + 1) % suggestions.length)
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      setActive((i) => (i - 1 + suggestions.length) % suggestions.length)
-    } else if (e.key === 'Enter' || e.key === 'Tab') {
-      // 只在有高亮项时接管，否则让回车/制表正常走
-      const target = suggestions[active]
-      if (target) {
+    // 联想候选项的方向键 / 回车优先
+    if (open && suggestions.length) {
+      if (e.key === 'ArrowDown') {
         e.preventDefault()
-        pick(target)
+        setActive((i) => (i + 1) % suggestions.length)
+        return
       }
-    } else if (e.key === 'Escape') {
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setActive((i) => (i - 1 + suggestions.length) % suggestions.length)
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        const target = suggestions[active]
+        if (target) {
+          e.preventDefault()
+          pick(target)
+          return
+        }
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setOpen(false)
+        return
+      }
+    }
+
+    // Ctrl+Enter = 发送：先把正在输入的地址落成标签，
+    // 否则这封信会漏掉最后一个收件人（不拦事件，让发送继续）
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      commitDraft()
+      return
+    }
+
+    if (e.key === 'Enter' || e.key === ',' || e.key === ';' || e.key === '；' || e.key === '，') {
+      // 逗号 / 分号 / 回车：确认这一个地址
+      if (draft.trim()) {
+        e.preventDefault()
+        commitDraft()
+      }
+      return
+    }
+
+    if (e.key === 'Backspace' && !draft && chips.length) {
+      // 输入框空了按退格 → 删掉最后一个标签（邮件客户端都这么干）
       e.preventDefault()
-      setOpen(false)
+      removeChip(chips.length - 1)
+      return
+    }
+
+    if (e.key === 'ArrowLeft' && !draft && chips.length) {
+      // 光标空着按左键 → 把最后一个标签拿回来改
+      e.preventDefault()
+      editChip(chips.length - 1)
     }
   }
 
   return (
-    <div className="addrfield" ref={boxRef}>
-      <input
-        className={`addr-${props.name}`}
-        value={props.value}
-        placeholder={props.placeholder}
-        onChange={(e) => {
-          props.onChange(e.target.value)
-          setOpen(true)
+    <div className={`addrfield addrfield-${props.name}`} ref={boxRef}>
+      <div
+        className="addrchips"
+        onClick={(e) => {
+          // 点空白处把焦点给输入框
+          if (e.target === e.currentTarget) inputRef.current?.focus()
         }}
-        onFocus={() => setOpen(true)}
-        onKeyDown={onKeyDown}
-      />
+      >
+        {chips.map((chip, i) => (
+          <span className="addrchip" key={`${chip}-${i}`} title={chip}>
+            <button
+              type="button"
+              className="addrchip-label"
+              title={`点击编辑：${chip}`}
+              onClick={() => editChip(i)}
+            >
+              {chipLabel(chip)}
+            </button>
+            <button
+              type="button"
+              className="addrchip-x"
+              title="移除这个收件人"
+              onClick={() => removeChip(i)}
+            >
+              <Icon name="close" size={9} />
+            </button>
+          </span>
+        ))}
+        <input
+          ref={inputRef}
+          className={`addr-${props.name}`}
+          value={draft}
+          placeholder={chips.length ? '' : props.placeholder}
+          onChange={(e) => {
+            // 每次输入都同步给上层：Ctrl+Enter 才不会漏掉正在敲的地址
+            setDraft(e.target.value)
+            emit(chips, e.target.value)
+            setOpen(true)
+          }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => {
+            // 焦点走了就把正在输入的地址落下来，别让它停在「看着填了其实没算」的状态
+            commitDraft()
+            setOpen(false)
+          }}
+          onKeyDown={onKeyDown}
+          onPaste={(e) => {
+            // 粘一整串地址进来（比如从别处复制的收件人行）：直接切成标签
+            const text = e.clipboardData.getData('text/plain')
+            if (!text) return
+            if (!/[,;，；]/.test(text) && !/<\S+@\S+>/.test(text)) return
+            e.preventDefault()
+            commitDraft(`${draft ? `${draft} ` : ''}${text}`)
+          }}
+        />
+      </div>
       {open && suggestions.length > 0 && (
         <div className="addrsug" role="listbox">
           {suggestions.map((c, i) => (

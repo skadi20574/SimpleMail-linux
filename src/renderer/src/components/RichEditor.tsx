@@ -246,6 +246,51 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor(
     props.onChange()
   }
 
+  /**
+   * Tab 缩进。
+   *
+   * contenteditable 里 Tab 的默认行为是**把焦点移到下一个控件**，
+   * 写信时一按 Tab 光标就跳出正文（用户反馈的正是这个）。
+   * 这里改成插一段空白：四个不换行空格。
+   *
+   * 为什么用 &nbsp; 而不是 \t 或 CSS text-indent：
+   *   · 收件端的客户端读不到我们的 CSS，text-indent 发出去就没了；
+   *   · 普通空格在 HTML 里会被折叠，只有 &nbsp; 能稳定保留下来。
+   *
+   * Shift+Tab 反缩进：把光标前最多四个 &nbsp; 删掉。
+   */
+  const insertIndent = (shift: boolean): void => {
+    restoreSelection()
+    const sel = window.getSelection()
+    if (!sel || !sel.rangeCount) return
+
+    if (!shift) {
+      document.execCommand('insertHTML', false, '&nbsp;&nbsp;&nbsp;&nbsp;')
+      return
+    }
+
+    // 反缩进：只在同一个文本节点内向左看，最多吃掉 4 个空白
+    const range = sel.getRangeAt(0)
+    const node = range.startContainer
+    if (node.nodeType !== Node.TEXT_NODE) return
+    const text = node.nodeValue ?? ''
+    let cut = 0
+    while (cut < 4 && range.startOffset - cut - 1 >= 0) {
+      const ch = text[range.startOffset - cut - 1]
+      if (ch !== '\u00a0' && ch !== ' ') break
+      cut++
+    }
+    if (!cut) return
+    const r = document.createRange()
+    r.setStart(node, range.startOffset - cut)
+    r.setEnd(node, range.startOffset)
+    sel.removeAllRanges()
+    sel.addRange(r)
+    document.execCommand('delete', false)
+    // 删完之后光标落在删除点上，选区已经被 execCommand 收拢
+    saveSelection()
+  }
+
   /** 处理「粘贴图片」：剪贴板里带图片文件就走这条路 */
   const pasteImageFile = async (file: File): Promise<void> => {
     const saved = await props.onSaveImage(file)
@@ -526,6 +571,15 @@ const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor(
         data-empty={empty ? '1' : '0'}
         onInput={() => {
           saveSelection()
+          syncEmpty()
+          props.onChange()
+        }}
+        onKeyDown={(e) => {
+          if (e.key !== 'Tab') return
+          // Tab 必须拦掉：不拦的话浏览器会把焦点移出正文，
+          // 打字打到一半突然跑到别的控件上
+          e.preventDefault()
+          insertIndent(e.shiftKey)
           syncEmpty()
           props.onChange()
         }}
